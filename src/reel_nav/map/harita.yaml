@@ -1,0 +1,7 @@
+free_thresh: 0.25
+image: stadPist.pgm
+mode: trinary
+negate: 0
+occupied_thresh: 0.65
+origin: [-163.738525390625, -94.427001953125, 0.0]
+resolution: 0.05

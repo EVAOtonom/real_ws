@@ -1,0 +1,7 @@
+free_thresh: 0.25
+image: harita.pgm
+mode: trinary
+negate: 0
+occupied_thresh: 0.65
+origin: [-175.31683349609375, -215.22918701171875, 0.0]
+resolution: 0.05

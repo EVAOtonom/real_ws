@@ -1,0 +1,173 @@
+/**:
+  ros__parameters:
+
+    # =========================
+    # TOPICS
+    # =========================
+
+    pointCloudTopic: "/rslidar_points"
+
+    imuTopic: "/imu/data"
+
+    # Yüksek frekanslı LIO-SAM odometrisi.
+    # IMU frekansına yakın yayınlanır.
+    odomTopic: "/lio_sam/odometry/imu"
+
+    # GPS kullanılmıyor.
+    gpsTopic: "/unused/gps"
+
+
+    # =========================
+    # FRAMES
+    # =========================
+
+    lidarFrame: "rslidar"
+    baselinkFrame: "base_footprint"
+    odometryFrame: "odom"
+    mapFrame: "map"
+
+    # TF yalnızca EKF tarafından yayınlanacak.
+    publishTF: false
+
+
+    # =========================
+    # GPS SETTINGS
+    # =========================
+
+    # GPS kullanılmadığı ve IMU yaw drift yaptığı için false.
+    useImuHeadingInitialization: true
+
+    useGpsElevation: false
+    gpsCovThreshold: 20.0
+    poseCovThreshold: 1.0
+
+
+    # =========================
+    # EXPORT SETTINGS
+    # =========================
+
+    savePCD: false
+    savePCDDirectory: "/LIO-SAM_MAPS/"
+
+
+    # =========================
+    # LIDAR SETTINGS
+    # =========================
+
+    sensor: velodyne
+    N_SCAN: 32
+    Horizon_SCAN: 900
+
+    downsampleRate: 1
+
+    lidarMinRange: 3.0
+    lidarMaxRange: 80.0
+
+
+    # =========================
+    # IMU SETTINGS
+    # =========================
+
+    imuAccNoise: 3.9939570888238808e-03
+    imuGyrNoise: 1.5636343949698187e-03
+
+    imuAccBiasN: 6.4356659353532566e-05
+    imuGyrBiasN: 3.5640318696367613e-05
+
+    imuGravity: 9.80511
+    imuRPYWeight: 0.01
+
+
+    # =========================
+    # EXTRINSIC CALIBRATION
+    # =========================
+
+    extrinsicTrans: [0.0, 0.0, -0.15]
+
+    extrinsicRot: [1.0,  0.0,  0.0,
+                   0.0, -1.0,  0.0,
+                   0.0,  0.0, -1.0]
+
+    extrinsicRPY: [1.0,  0.0,  0.0,
+                   0.0, -1.0,  0.0,
+                   0.0,  0.0, -1.0]
+
+
+    # =========================
+    # FEATURE EXTRACTION
+    # =========================
+
+    edgeThreshold: 1.0
+    surfThreshold: 0.1
+
+    edgeFeatureMinValidNum: 10
+    surfFeatureMinValidNum: 100
+
+
+    # =========================
+    # VOXEL FILTER
+    # =========================
+
+    odometrySurfLeafSize: 0.4
+
+    # Odometri odaklı kullanım için biraz büyütüldü.
+    # CPU yükünü azaltır.
+    mappingCornerLeafSize: 0.3
+    mappingSurfLeafSize: 0.5
+
+
+    # =========================
+    # GROUND VEHICLE CONSTRAINT
+    # =========================
+
+    z_tollerance: 0.2
+    rotation_tollerance: 0.2
+
+
+    # =========================
+    # CPU
+    # =========================
+
+    numberOfCores: 10
+
+    # Her gelen LiDAR taramasını işle.
+    # LiDAR 10 Hz olduğu için mapping odometry yine en fazla 10 Hz olur.
+    mappingProcessInterval: 0.0
+
+
+    # =========================
+    # LOCAL MAP
+    # =========================
+
+    surroundingkeyframeAddingDistThreshold: 1.0
+    surroundingkeyframeAddingAngleThreshold: 0.2
+
+    surroundingKeyframeDensity: 2.0
+
+    # Yalnızca odometri için daha küçük lokal çevre yeterli.
+    surroundingKeyframeSearchRadius: 15.0
+
+
+    # =========================
+    # LOOP CLOSURE
+    # =========================
+
+    loopClosureEnableFlag: false
+    loopClosureFrequency: 1.0
+
+    surroundingKeyframeSize: 50
+
+    historyKeyframeSearchRadius: 15.0
+    historyKeyframeSearchTimeDiff: 30.0
+    historyKeyframeSearchNum: 25
+    historyKeyframeFitnessScore: 0.3
+
+
+    # =========================
+    # VISUALIZATION
+    # =========================
+
+    # Global harita görselleştirmesi kapalıya yakın.
+    globalMapVisualizationSearchRadius: 0.0
+    globalMapVisualizationPoseDensity: 50.0
+    globalMapVisualizationLeafSize: 5.0
