@@ -260,7 +260,8 @@ navsat_transform_node:
     # Heading /imu/data topic'inden alınır.
     use_odometry_yaw: false
 
-    wait_for_datum: true
-    #datum: [40.7893981714, 29.5090583571, 158.558]
-    #LLH = [40.7893813267, 29.5090488533, 157.458]
-    datum: [40.7904240077, 29.5092174538, 156.906]
+    wait_for_datum: false
+
+    #datum: [40.7904240077, 29.5092174538, 156.906] #dış  
+  
+    #datum = [40.7902807133, 29.5090156800, 158.054] #iç

@@ -52,7 +52,7 @@ def pcd_to_pgm_and_yaml(pcd_path, pgm_path, yaml_path, resolution=0.05, occupied
 
 # Örnek kullanım
 pcd_to_pgm_and_yaml(
-    pcd_path="map.pcd",
+    pcd_path="high_intensity_points.pcd",
     pgm_path="harita.pgm",
     yaml_path="harita.yaml",
     resolution=0.05
