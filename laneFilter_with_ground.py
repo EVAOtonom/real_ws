@@ -18,7 +18,7 @@ OUTPUT_GROUND_CANDIDATES = Path("ground_high_intensity.pcd")
 
 # Intensity threshold.
 # Start with percentile-based threshold instead of guessing a fixed value.
-INTENSITY_PERCENTILE =37.5
+INTENSITY_PERCENTILE =35.5
 
 # Ground filtering band.
 # IMPORTANT:

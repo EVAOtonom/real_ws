@@ -469,7 +469,7 @@ pressure_low_pass_filter_frequency : 1
 
 # The speed at which the individual IMU publishers will publish at.
 imu_data_raw_rate         : 1    # Rate of imu/data_raw topic
-imu_data_rate             : 200  # Rate of imu/data topic
+imu_data_rate             : 250  # Rate of imu/data topic
 imu_mag_data_rate         : 0    # Rate of imu/mag topic
 imu_pressure_data_rate    : 0    # Rate of imu/pressure topic
 imu_wheel_speed_data_rate : 0    # Rate of imu/wheel_Speed topic

@@ -119,29 +119,29 @@ def generate_launch_description():
         # SABİT DÖNÜŞLER
         # ============================================================
 
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_tf_map_to_odom',
-            output='log',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'map', 'odom'
-            ]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='static_tf_map_to_odom',
+        #     output='log',
+        #     arguments=[
+        #         '0', '0', '0',
+        #         '0', '0', '0',
+        #         'map', 'odom'
+        #     ]
+        # ),
 
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_tf_odom_to_base',
-            output='log',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'odom', 'base_footprint'
-            ]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='static_tf_odom_to_base',
+        #     output='log',
+        #     arguments=[
+        #         '0', '0', '0',
+        #         '0', '0', '0',
+        #         'odom', 'base_footprint'
+        #     ]
+        # ),
 
         # ============================================================
         # JOINT STATE PUBLISHER

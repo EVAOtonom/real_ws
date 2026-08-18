@@ -453,9 +453,9 @@ global_costmap:
 
         csv_path: "/home/otonom/real_ws/src/middle_lane_cost_layer/config/road_segments_50_points.csv"
 
-        lane_half_width: 1.5
+        lane_half_width: 1.2
 
-        lane_cost: 200
+        lane_cost: 230
 
 
       static_layer:
