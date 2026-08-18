@@ -451,7 +451,7 @@ global_costmap:
 
         enabled: true
 
-        csv_path: "/home/otonom/real_ws/src/middle_lane_cost_layer/config/road_segments_50_points.csv"
+        csv_path: "/home/merve/real_ws/src/middle_lane_cost_layer/config/road_segments_50_points.csv"
 
         lane_half_width: 1.2
 
