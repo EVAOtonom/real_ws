@@ -57,7 +57,7 @@ setup(
             "levha_otomatik_park_birlesik=" + package_name + ".levha_otomatik_park_birlesik:main",
             "coordinate_rota=" + package_name + ".coordinate_rota:main", 
             "ilk_Test=" + package_name + ".ilk_Test:main",         	
-
+            "hedef_isik=" + package_name + ".hedef_isik:main",         	
         ],
     },
 )

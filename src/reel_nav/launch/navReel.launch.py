@@ -119,29 +119,29 @@ def generate_launch_description():
         # SABİT DÖNÜŞLER
         # ============================================================
 
-        # Node(
-        #     package='tf2_ros',
-        #     executable='static_transform_publisher',
-        #     name='static_tf_map_to_odom',
-        #     output='log',
-        #     arguments=[
-        #         '0', '0', '0',
-        #         '0', '0', '0',
-        #         'map', 'odom'
-        #     ]
-        # ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='static_tf_map_to_odom',
+            output='log',
+            arguments=[
+                '0', '0', '0',
+                '0', '0', '0',
+                'map', 'odom'
+            ]
+        ),
 
-        # Node(
-        #     package='tf2_ros',
-        #     executable='static_transform_publisher',
-        #     name='static_tf_odom_to_base',
-        #     output='log',
-        #     arguments=[
-        #         '0', '0', '0',
-        #         '0', '0', '0',
-        #         'odom', 'base_footprint'
-        #     ]
-        # ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='static_tf_odom_to_base',
+            output='log',
+            arguments=[
+                '0', '0', '0',
+                '0', '0', '0',
+                'odom', 'base_footprint'
+            ]
+        ),
 
         # ============================================================
         # JOINT STATE PUBLISHER
@@ -190,14 +190,14 @@ def generate_launch_description():
                 {
                     'use_sim_time': use_sim_time,
                     'target_frame': 'base_footprint',
-                    'transform_tolerance': 0.10,
+                    'transform_tolerance': 0.20,
                     'min_height': -0.05,
-                    'max_height': 1.80,
+                    'max_height': 1.00,
                     'angle_min': -3.141592653589793,
                     'angle_max': 3.141592653589793,
                     'angle_increment': 0.008726646259972,
                     'scan_time': 0.105,
-                    'range_min': 0.50,
+                    'range_min': 3.0,
                     'range_max': 12.0,
                     'use_inf': True
                 }

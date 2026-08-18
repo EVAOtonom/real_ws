@@ -15,7 +15,9 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 
 TOPIC_NAME = "/initialpose"
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.expanduser(
+    "~/real_ws/src/reel_evata/reel_evata"
+)
 
 JSON_FILE = "rota.json"
 

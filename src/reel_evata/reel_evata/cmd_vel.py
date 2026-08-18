@@ -93,13 +93,13 @@ class CmdVelSubscriber(Node):
 
         # ==================== KINEMATIK PARAMETRELER ====================
         self.declare_parameter('wheelbase', 1.55)               # Araç dingil mesafesi (metre)
-        self.declare_parameter('min_turning_radius', 1.50)      # Minimum dönüş yarıçapı (metre)
+        self.declare_parameter('min_turning_radius', 2.50)      # Minimum dönüş yarıçapı (metre)
 
         # ==================== HIZ PARAMETRELERI ====================
-        self.declare_parameter('max_motor_power', 35)
+        self.declare_parameter('max_motor_power', 36)
         self.declare_parameter('min_motor_power', 28)
         self.declare_parameter('max_velocity', 0.8)          
-        self.declare_parameter('vel_kp', 4.0)
+        self.declare_parameter('vel_kp', 2.0)
         self.declare_parameter('vel_ki', 1.5)
         self.declare_parameter('vel_kd', 0.8)
         self.declare_parameter('max_accel', 0.45)             
@@ -112,9 +112,9 @@ class CmdVelSubscriber(Node):
         self.declare_parameter('max_reverse_velocity', 0.2)
         self.declare_parameter('reverse_min_motor_power', 32)
         self.declare_parameter('reverse_max_motor_power', 35)
-        self.declare_parameter('reverse_vel_kp', 4.0)
-        self.declare_parameter('reverse_vel_ki', 1.5)
-        self.declare_parameter('reverse_vel_kd', 0.8)
+        self.declare_parameter('reverse_vel_kp', 2.0)
+        self.declare_parameter('reverse_vel_ki', 0.5)
+        self.declare_parameter('reverse_vel_kd', 0.5)
         self.declare_parameter('reverse_max_accel', 0.35)
         self.declare_parameter('reverse_max_decel', 0.8)
         self.declare_parameter('reverse_overspeed_brake_margin', 0.10)
@@ -144,7 +144,7 @@ class CmdVelSubscriber(Node):
 
         # ==================== KALKIS / STALL ====================
         self.declare_parameter('stall_boost_rate', 1.0)
-        self.declare_parameter('absolute_max_motor_power', 35)
+        self.declare_parameter('absolute_max_motor_power', 36)
 
         self._load_params()
         self.add_on_set_parameters_callback(self._on_param_update)
