@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import random
 import time
 
 import cv2
@@ -58,12 +59,16 @@ PARK_TETIK_BOLGESI = [
 
 
 # ============================================================
-# 1. PARK LEVHASI TARAMA NOKTASI (STAGING)
+# PARK ALANINA GİRİNCE GİDİLECEK LEVHA TARAMA WAYPOINT'İ
 # ============================================================
-#
-# Araç park tetik bölgesine girince normal navigasyon iptal edilir
-# ve önce bu noktaya gelir. Burada tam duruş doğrulandıktan sonra
-# 10 saniyelik İLK park levhası taraması yapılır.
+# 5. /initialpose:
+# position:
+#   x: -20.908710479736328
+#   y: -16.73338508605957
+# orientation:
+#   z: -0.07437800594191862
+#   w:  0.9972301199984405
+# yaw ~= -8.53097 derece
 #
 STAGING_X = -16.063560485839844
 STAGING_Y = -16.013036727905273
@@ -71,40 +76,7 @@ STAGING_YAW_DEG = 0.9814232221021342
 
 
 # ============================================================
-# 2. VE SON PARK LEVHASI TARAMA NOKTASI
-# ============================================================
-#
-# Kullanıcının verdiği /initialpose:
-#
-# position:
-#   x: -6.516376495361328
-#   y: -16.529788970947266
-#   z: 0.0
-#
-# orientation:
-#   x: 0.0
-#   y: 0.0
-#   z: 0.3470369129922216
-#   w: 0.9378514706609087
-#
-# yaw ~= 40.612 derece
-#
-# İlk 10 saniyelik taramada PARK bulunamazsa araç buraya
-# NavigateToPose ile gider. Yay hareketi şimdilik YOKTUR.
-#
-SECOND_SEARCH_X = -6.516376495361328
-SECOND_SEARCH_Y = -16.529788970947266
-SECOND_SEARCH_Z = 0.0
-SECOND_SEARCH_OZ = 0.3470369129922216
-SECOND_SEARCH_OW = 0.9378514706609087
-SECOND_SEARCH_YAW_RAD = 2.0 * math.atan2(
-    SECOND_SEARCH_OZ,
-    SECOND_SEARCH_OW,
-)
-
-
-# ============================================================
-# DURUŞ KONTROLÜ
+# STAGING DURUŞ KONTROLÜ
 # ============================================================
 
 STOP_LINEAR_THRESHOLD = 0.05
@@ -119,18 +91,9 @@ CANCEL_WAIT_SECONDS = 0.50
 # PARK LEVHASI TARAMA
 # ============================================================
 
-# Her arama penceresi 10 saniyedir.
-#
-# 1. arama:
-#   STAGING noktasında 10 sn.
-#
-# 2. arama:
-#   SECOND_SEARCH noktasında 10 sn.
-#
-# Geçerli PARK tabelası görülür görülmez 10 saniyenin dolması
-# beklenmeden park seçilir ve levha arama kalıcı olarak kapatılır.
-#
-PARK_SIGN_SCAN_SECONDS = 10.0
+# Bu süre SADECE tabela hiç bulunamazsa fallback/random seçim için maksimum bekleme süresidir.
+# Geçerli PARK tabelası görülür görülmez bu timeout BEKLENMEDEN park yolu çizilir.
+PARK_SIGN_TIMEOUT_SECONDS = 20.0
 
 # İlk geçerli PARK tespitinde park seçilip planner başlatılır.
 PARK_REQUIRED_DETECTIONS = 1
@@ -141,18 +104,7 @@ YOLO_GENERAL_MIN_CONFIDENCE = 0.60
 MIN_SIGN_DISTANCE = 0.70
 MAX_SIGN_DISTANCE = 25.0
 
-# İkinci aramada da PARK levhası bulunamazsa yalnız bu listedeki
-# parklar fallback adayıdır.
-#
-# ÖNEMLİ:
-# Gerçek sistemde park etmenin yasak olduğu bilinen slotları bu
-# listeden ÇIKAR. Şimdilik 1-9 açık bırakılmıştır.
-#
-SAFE_FALLBACK_PARKS = {
-    1, 2, 3, 4, 5, 6, 7, 8, 9,
-}
-
-# Kamera GUI yalnızca iki park levhası tarama penceresinde açılır.
+# Kamera GUI yalnızca park levhası taranırken açılır.
 SHOW_CAMERA_DURING_PARK_SCAN = True
 CAMERA_WINDOW_NAME = 'Park Levha Taramasi'
 
@@ -194,7 +146,7 @@ PARK_YAW_GOAL_TOLERANCE = 0.10
 
 
 # ============================================================
-# 9 PARK NOKTASI - GÜNCEL /initialpose VERİLERİ
+# 7 PARK NOKTASI - GÜNCEL /initialpose VERİLERİ
 # ============================================================
 
 PARK_NOKTALARI = {
@@ -293,7 +245,6 @@ class SignDetectorParkingManager(Node):
     STATE_NORMAL = 'NORMAL'
     STATE_CANCELING = 'CANCELING'
     STATE_STAGING_NAV = 'STAGING_NAV'
-    STATE_SECOND_SEARCH_NAV = 'SECOND_SEARCH_NAV'
     STATE_WAIT_STOP = 'WAIT_STOP'
     STATE_WAIT_PARK_SIGN = 'WAIT_PARK_SIGN'
     STATE_WAIT_PARK_SERVERS = 'WAIT_PARK_SERVERS'
@@ -475,27 +426,12 @@ class SignDetectorParkingManager(Node):
         self.staging_goal_sent = False
         self.staging_goal_handle = None
 
-        # İkinci arama noktasına gidiş runtime.
-        self.second_search_goal_sent = False
-        self.second_search_goal_handle = None
-
         # ----------------------------------------------------
         # PARK LEVHASI
         # ----------------------------------------------------
         self.park_detection_count = 0
         self.park_detection_points = []
         self.park_search_started_at = None
-
-        # 0 = henüz arama yok
-        # 1 = staging'deki ilk arama
-        # 2 = ikinci ve son arama
-        self.park_search_attempt = 0
-
-        # Bir PARK levhası bulunduğunda veya ikinci arama bittiğinde
-        # True olur. Bundan sonra PARK levhası seçim algoritmasına
-        # bir daha dahil edilmez.
-        self.park_sign_search_permanently_disabled = False
-
         self.selected_park_index = None
         self.selection_reason = None
 
@@ -526,13 +462,11 @@ class SignDetectorParkingManager(Node):
         self.get_logger().info(
             '\n========== OTOMATİK PARK + CÜLLOP PARK ==========' '\n'
             f'Tetik poligonu: {PARK_TETIK_BOLGESI}\n'
-            f'1. tarama / staging: X={STAGING_X:.3f}, Y={STAGING_Y:.3f}, '
+            f'Staging: X={STAGING_X:.3f}, Y={STAGING_Y:.3f}, '
             f'Yaw={STAGING_YAW_DEG:.2f}°\n'
-            f'2. tarama: X={SECOND_SEARCH_X:.3f}, Y={SECOND_SEARCH_Y:.3f}, '
-            f'Yaw={math.degrees(SECOND_SEARCH_YAW_RAD):.2f}°\n'
-            f'Her tarama süresi: {PARK_SIGN_SCAN_SECONDS:.0f} sn\n'
-            'Levha bulunursa: levhaya en yakın park slotu\n'
-            f'İki taramada da yoksa güvenli fallback: {sorted(SAFE_FALLBACK_PARKS)}\n'
+            f'Levha tarama timeout: {PARK_SIGN_TIMEOUT_SECONDS:.0f} sn (yalnızca tabela yoksa)\n'
+            'Levha bulunursa: levhaya en yakın 8 park slotundan biri\n'
+            'Levha bulunmazsa: Park 1-8 arasından RANDOM\n'
             f'Park planner/controller: {PLANNER_ID} / {CONTROLLER_ID}'
         )
 
@@ -731,7 +665,7 @@ class SignDetectorParkingManager(Node):
                 self.park_search_started_at = time.monotonic()
 
             elapsed = time.monotonic() - self.park_search_started_at
-            if elapsed >= PARK_SIGN_SCAN_SECONDS:
+            if elapsed >= PARK_SIGN_TIMEOUT_SECONDS:
                 self.finish_park_sign_scan_and_select()
             return
 
@@ -835,11 +769,9 @@ class SignDetectorParkingManager(Node):
 
         if wrapped_result.status == GoalStatus.STATUS_SUCCEEDED:
             self.stopped_since = None
-            self.park_search_attempt = 1
             self.state = self.STATE_WAIT_STOP
             self.get_logger().warn(
-                '[STAGING] Waypoint tamamlandı. '
-                '1. levha taramasından önce araç tam duruşu doğrulanıyor.'
+                '[STAGING] Waypoint tamamlandı. Araç tam duruşu doğrulanıyor.'
             )
             return
 
@@ -848,134 +780,26 @@ class SignDetectorParkingManager(Node):
         )
 
     # ========================================================
-    # İKİNCİ PARK LEVHASI TARAMA NOKTASINA GİT
-    # ========================================================
-
-    def send_second_search_goal(self):
-        if self.second_search_goal_sent:
-            return
-
-        if self.park_sign_search_permanently_disabled:
-            return
-
-        if not self.navigate_client.wait_for_server(timeout_sec=0.05):
-            self.finish_with_error(
-                '[2. TARAMA] navigate_to_pose action server hazır değil.'
-            )
-            return
-
-        self.second_search_goal_sent = True
-        self.park_search_started_at = None
-        self.reset_park_confirmation()
-
-        goal_msg = NavigateToPose.Goal()
-        goal_msg.pose = self.create_pose(
-            SECOND_SEARCH_X,
-            SECOND_SEARCH_Y,
-            SECOND_SEARCH_Z,
-            SECOND_SEARCH_YAW_RAD,
-        )
-
-        self.state = self.STATE_SECOND_SEARCH_NAV
-
-        self.get_logger().warn(
-            '\n[1. TARAMADA PARK LEVHASI BULUNAMADI]\n'
-            'İkinci ve SON tarama noktasına gidiliyor.\n'
-            f'X={SECOND_SEARCH_X:.3f}, Y={SECOND_SEARCH_Y:.3f}, '
-            f'Yaw={math.degrees(SECOND_SEARCH_YAW_RAD):.2f}°\n'
-            'Bu geçiş şimdilik normal NavigateToPose path ile yapılır; '
-            'özel yay geometrisi uygulanmaz.'
-        )
-
-        future = self.navigate_client.send_goal_async(goal_msg)
-        future.add_done_callback(self.second_search_goal_response_callback)
-
-    def second_search_goal_response_callback(self, future):
-        try:
-            goal_handle = future.result()
-        except Exception as error:
-            self.finish_with_error(
-                f'[2. TARAMA] Goal gönderilemedi: {error}'
-            )
-            return
-
-        if not goal_handle.accepted:
-            self.finish_with_error(
-                '[2. TARAMA] NavigateToPose goal reddedildi.'
-            )
-            return
-
-        self.second_search_goal_handle = goal_handle
-        self.get_logger().info('[2. TARAMA] Goal kabul edildi.')
-
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self.second_search_result_callback)
-
-    def second_search_result_callback(self, future):
-        try:
-            wrapped_result = future.result()
-        except Exception as error:
-            self.finish_with_error(
-                f'[2. TARAMA] Sonuç alınamadı: {error}'
-            )
-            return
-
-        if wrapped_result.status == GoalStatus.STATUS_SUCCEEDED:
-            self.stopped_since = None
-            self.park_search_attempt = 2
-            self.state = self.STATE_WAIT_STOP
-
-            self.get_logger().warn(
-                '[2. TARAMA] Noktaya ulaşıldı. '
-                'İkinci ve SON levha taramasından önce tam duruş doğrulanıyor.'
-            )
-            return
-
-        self.finish_with_error(
-            '[2. TARAMA] NavigateToPose başarısız. '
-            f'action_status={wrapped_result.status}'
-        )
-
-    # ========================================================
-    # PARK LEVHASI TARAMASI - SADECE 2 KEZ
+    # PARK LEVHASI TARAMASI - TESPİTTE ANINDA DEVAM
     # ========================================================
 
     def start_park_sign_scan(self):
         if self.state == self.STATE_WAIT_PARK_SIGN:
             return
 
-        if self.park_sign_search_permanently_disabled:
-            return
-
-        if self.park_search_attempt not in (1, 2):
-            self.finish_with_error(
-                f'Geçersiz park levhası arama numarası: '
-                f'{self.park_search_attempt}'
-            )
-            return
-
         self.reset_park_confirmation()
         self.park_search_started_at = time.monotonic()
         self.state = self.STATE_WAIT_PARK_SIGN
 
-        if self.park_search_attempt == 1:
-            location_text = 'STAGING / İLK TARAMA'
-        else:
-            location_text = 'İKİNCİ NOKTA / SON TARAMA'
-
         self.get_logger().warn(
             '\n[PARK LEVHASI TARAMASI BAŞLADI]\n'
-            f'Arama: {self.park_search_attempt}/2 - {location_text}\n'
-            f'Süre: {PARK_SIGN_SCAN_SECONDS:.0f} sn\n'
-            'Geçerli PARK tabelası görülür görülmez timeout beklenmeden '
-            'park seçilecek.'
+            'Geçerli PARK tabelası görülür görülmez beklemeden park yolu çizilecek.\n'
+            f'Tabela hiç görülmezse {PARK_SIGN_TIMEOUT_SECONDS:.0f} sn sonunda '
+            '1-8 arasından random park seçilecek.'
         )
 
     def finish_park_sign_scan_and_select(self):
         if self.state != self.STATE_WAIT_PARK_SIGN:
-            return
-
-        if self.park_sign_search_permanently_disabled:
             return
 
         elapsed = 0.0
@@ -984,10 +808,9 @@ class SignDetectorParkingManager(Node):
 
         self.close_camera_window()
 
-        # ----------------------------------------------------
-        # PARK LEVHASI BULUNDU
-        # ----------------------------------------------------
         if self.park_detection_count >= PARK_REQUIRED_DETECTIONS:
+            # PARK_REQUIRED_DETECTIONS kadar geçerli tespit toplanmıştır.
+            # Mevcut geçerli tabela map noktalarının ortalamasıyla park seçilir.
             avg_x = sum(p[0] for p in self.park_detection_points) / len(
                 self.park_detection_points
             )
@@ -1001,76 +824,31 @@ class SignDetectorParkingManager(Node):
             )
 
             self.selected_park_index = selected_index
-            self.selection_reason = (
-                f'PARK_SIGN_SEARCH_{self.park_search_attempt}'
-            )
-
-            # Levha bulundu. Bundan sonra bu node PARK levhasını
-            # bir daha park seçimi için kullanmayacak.
-            self.park_sign_search_permanently_disabled = True
-            self.park_search_started_at = None
+            self.selection_reason = 'PARK_SIGN'
 
             self.get_logger().warn(
-                '\n[PARK LEVHASI BULUNDU - LEVHA ARAMA KAPATILDI]\n'
-                f'Arama: {self.park_search_attempt}/2\n'
+                '\n[PARK LEVHASI BULUNDU - ANINDA PARK BAŞLATILIYOR]\n'
                 f'Tespit süresi: {elapsed:.1f} sn\n'
                 f'Geçerli tespit: {self.park_detection_count}\n'
                 f'Tabela ortalama map konumu: X={avg_x:.3f}, Y={avg_y:.3f}\n'
                 f'En yakın park: #{selected_index}\n'
                 f'Tabela -> park mesafesi: {selected_distance:.2f} m'
             )
-
-            self.state = self.STATE_WAIT_PARK_SERVERS
-            return
-
-        # ----------------------------------------------------
-        # 1. TARAMADA BULUNAMADI -> İKİNCİ NOKTAYA GİT
-        # ----------------------------------------------------
-        if self.park_search_attempt == 1:
-            self.park_search_started_at = None
-            self.reset_park_confirmation()
-            self.send_second_search_goal()
-            return
-
-        # ----------------------------------------------------
-        # 2. VE SON TARAMADA DA BULUNAMADI
-        #
-        # PARK LEVHASI ARAMA BURADA KALICI OLARAK KAPANIR.
-        # ----------------------------------------------------
-        if self.park_search_attempt == 2:
-            self.park_sign_search_permanently_disabled = True
-            self.park_search_started_at = None
-
-            selected_index, selected_distance = (
-                self.select_nearest_safe_fallback_park()
+        else:
+            self.selected_park_index = random.choice(
+                sorted(PARK_NOKTALARI.keys())
             )
-
-            if selected_index is None:
-                self.finish_with_error(
-                    'İki taramada da PARK levhası bulunamadı ve '
-                    'SAFE_FALLBACK_PARKS içinde kullanılabilir slot yok.'
-                )
-                return
-
-            self.selected_park_index = selected_index
-            self.selection_reason = 'SAFE_FALLBACK_AFTER_TWO_SCANS'
+            self.selection_reason = 'RANDOM_TIMEOUT'
 
             self.get_logger().warn(
-                '\n[2. TARAMADA DA PARK LEVHASI YOK]\n'
+                '\n[PARK LEVHASI YOK - RANDOM PARK]\n'
                 f'Tarama süresi: {elapsed:.1f} sn\n'
-                'PARK levhası arama KALICI OLARAK KAPATILDI.\n'
-                f'Güvenli fallback listesi: {sorted(SAFE_FALLBACK_PARKS)}\n'
-                f'Seçilen en yakın fallback park: #{selected_index}\n'
-                f'Araç -> fallback park mesafesi: {selected_distance:.2f} m'
+                f'Geçerli tespit: {self.park_detection_count}\n'
+                f'Random seçilen park: #{self.selected_park_index}'
             )
 
-            self.state = self.STATE_WAIT_PARK_SERVERS
-            return
-
-        self.finish_with_error(
-            f'Beklenmeyen park levhası arama durumu: '
-            f'{self.park_search_attempt}'
-        )
+        self.park_search_started_at = None
+        self.state = self.STATE_WAIT_PARK_SERVERS
 
     # ========================================================
     # CAMERA / POINTCLOUD / TF
@@ -1225,14 +1003,8 @@ class SignDetectorParkingManager(Node):
         self.park_detection_points = []
 
     def process_park_detection(self, detections):
-        # PARK levhası yalnızca 1. veya 2. aktif tarama penceresinde
-        # park seçimine etki eder.
+        # Park levhası yalnızca staging noktasındaki tarama durumunda seçime etki eder.
         if self.state != self.STATE_WAIT_PARK_SIGN:
-            return
-
-        # İkinci arama bittikten veya bir levha bulunduktan sonra
-        # PARK levhası seçime bir daha dahil edilmez.
-        if self.park_sign_search_permanently_disabled:
             return
 
         park_detection = None
@@ -1281,7 +1053,8 @@ class SignDetectorParkingManager(Node):
             f'map=({map_x:.2f}, {map_y:.2f})'
         )
 
-        # Gerekli tespit sayısına ulaşınca 10 sn timeout'u BEKLEME.
+        # Kritik değişiklik:
+        # Gerekli tespit sayısına ulaşınca 20 sn timeout'u BEKLEME.
         # En yakın parkı seç ve doğrudan Cüllop planner/controller aşamasına geç.
         if self.park_detection_count >= PARK_REQUIRED_DETECTIONS:
             self.finish_park_sign_scan_and_select()
@@ -1301,47 +1074,6 @@ class SignDetectorParkingManager(Node):
 
         return best_index, best_distance
 
-    def select_nearest_safe_fallback_park(self):
-        # SAFE_FALLBACK_PARKS bir whitelist'tir:
-        # yalnız park etmenin serbest / güvenli olduğu bilinen slotlar
-        # burada tutulmalıdır.
-        candidates = [
-            park_index
-            for park_index in sorted(SAFE_FALLBACK_PARKS)
-            if park_index in PARK_NOKTALARI
-        ]
-
-        if not candidates:
-            return None, float('inf')
-
-        robot_pose = self.get_robot_pose_map()
-        if robot_pose is None:
-            robot_pose = self.last_robot_map_pose
-
-        # Lokalizasyon o anda alınamazsa ikinci tarama pozunu referans al.
-        if robot_pose is None:
-            robot_x = SECOND_SEARCH_X
-            robot_y = SECOND_SEARCH_Y
-        else:
-            robot_x = float(robot_pose[0])
-            robot_y = float(robot_pose[1])
-
-        best_index = None
-        best_distance = float('inf')
-
-        for park_index in candidates:
-            park = PARK_NOKTALARI[park_index]
-            distance = math.hypot(
-                float(park['x']) - robot_x,
-                float(park['y']) - robot_y,
-            )
-
-            if distance < best_distance:
-                best_distance = distance
-                best_index = park_index
-
-        return best_index, best_distance
-
     def color_image_callback(self, msg):
         try:
             cv_image = self.bridge.imgmsg_to_cv2(
@@ -1355,7 +1087,7 @@ class SignDetectorParkingManager(Node):
                 self.last_detection_time = now
                 self.last_detections = self.run_yolo(cv_image)
 
-                # Aktif 10 sn park taraması varsa park tespitlerini topla.
+                # 20 sn park taraması aktifse park tespitlerini topla.
                 self.process_park_detection(self.last_detections)
 
                 # Eski birleşik levha node davranışı: diğer algıları publish et.
@@ -1435,7 +1167,7 @@ class SignDetectorParkingManager(Node):
                     self.camera_window_failed = True
                     self.get_logger().warn(
                         '[KAMERA GUI] Pencere açılamadı; '
-                        'Park taraması ve YOLO çalışmaya devam edecek. '
+                        '20 sn tarama ve YOLO çalışmaya devam edecek. '
                         f'Hata: {gui_error}'
                     )
 
@@ -2013,7 +1745,6 @@ class SignDetectorParkingManager(Node):
     def finish_with_error(self, message):
         self.get_logger().error(message)
         self.parking_finished = True
-        self.park_sign_search_permanently_disabled = True
         self.state = self.STATE_ERROR
         self.close_camera_window()
         self.restore_normal_goal_tolerance()

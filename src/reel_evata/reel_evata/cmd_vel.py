@@ -15,7 +15,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Int8, Int16, Bool, Float32, String
-from time import time
+from time import monotonic
 import os
 import csv
 from datetime import datetime
@@ -93,7 +93,7 @@ class CmdVelSubscriber(Node):
 
         # ==================== KINEMATIK PARAMETRELER ====================
         self.declare_parameter('wheelbase', 1.55)               # Araç dingil mesafesi (metre)
-        self.declare_parameter('min_turning_radius', 2.50)      # Minimum dönüş yarıçapı (metre)
+        self.declare_parameter('min_turning_radius', 2.7)      # Minimum dönüş yarıçapı (metre)
 
         # ==================== HIZ PARAMETRELERI ====================
         self.declare_parameter('max_motor_power', 36)
@@ -111,21 +111,21 @@ class CmdVelSubscriber(Node):
         # motor_power yine pozitif buyukluk olarak gonderilir.
         self.declare_parameter('max_reverse_velocity', 0.2)
         self.declare_parameter('reverse_min_motor_power', 32)
-        self.declare_parameter('reverse_max_motor_power', 35)
+        self.declare_parameter('reverse_max_motor_power', 39)
         self.declare_parameter('reverse_vel_kp', 2.0)
         self.declare_parameter('reverse_vel_ki', 0.5)
         self.declare_parameter('reverse_vel_kd', 0.5)
         self.declare_parameter('reverse_max_accel', 0.35)
         self.declare_parameter('reverse_max_decel', 0.8)
-        self.declare_parameter('reverse_overspeed_brake_margin', 0.10)
+        self.declare_parameter('reverse_overspeed_brake_margin', 0.50)
         self.declare_parameter('reverse_stall_boost_rate', 1.0)
-        self.declare_parameter('reverse_absolute_max_motor_power', 35)
+        self.declare_parameter('reverse_absolute_max_motor_power', 39)
 
         # Yon degistirirken arac hareketliyse once durdur, sonra vitesi degistir.
         self.declare_parameter('gear_shift_velocity_threshold', 0.05)               
 
         # ==================== FREN ====================
-        self.declare_parameter('overspeed_brake_margin', 2.5)  
+        self.declare_parameter('overspeed_brake_margin', 0.5)  
         self.declare_parameter('stall_velocity_threshold', 0.08)  
 
         # ==================== DIREKSIYON ====================
@@ -135,7 +135,7 @@ class CmdVelSubscriber(Node):
         self.declare_parameter('angular_z_min', -0.35)
         self.declare_parameter('angular_gain', 1.0)
         self.declare_parameter('angular_deadband', 0.03) 
-        self.declare_parameter('steering_max_rate_dps', 60.0) 
+        self.declare_parameter('steering_max_rate_dps', 28.0) 
 
         # ==================== DONUSTE GUC ARTISI ====================
         self.declare_parameter('curvature_power_boost_enable', True)
@@ -143,21 +143,34 @@ class CmdVelSubscriber(Node):
         self.declare_parameter('turn_power_boost_max', 2.0)
 
         # ==================== KALKIS / STALL ====================
-        self.declare_parameter('stall_boost_rate', 1.0)
-        self.declare_parameter('absolute_max_motor_power', 36)
+        self.declare_parameter('stall_boost_rate', 1.3)
+        self.declare_parameter('absolute_max_motor_power', 38)
+
+        # ==================== WATCHDOG / GERCEK ZAMANLILIK ====================
+        # 20 Hz Nav2 komutunda 0.30 s = yaklasik 6 kacirilmis kontrol mesaji.
+        self.declare_parameter('cmd_vel_timeout', 0.30)
+        # /stm/read_odometer loglarda yaklasik 0.32 s periyotla (~3 Hz) geliyor.
+        # 0.30 s timeout normal bir odometri periyodundan kisa oldugu icin false-stop
+        # uretiyordu. 1.0 s ~= normal akista 3 odometri mesajinin kacirilmasi demek.
+        self.declare_parameter('odom_timeout', 1.00)
+
+        # Kontrol dongusu 50 Hz kalir; disk/terminal I/O daha dusuk hizda yapilir.
+        self.declare_parameter('status_log_hz', 2.0)
+        self.declare_parameter('csv_log_hz', 20.0)
+        self.declare_parameter('csv_flush_hz', 1.0)
 
         self._load_params()
         self.add_on_set_parameters_callback(self._on_param_update)
 
-        self.steering_angle_pub = self.create_publisher(Int16, '/stm/steering_angle', 10)
-        self.motor_power_pub = self.create_publisher(Int8, '/stm/motor_power', 10)
-        self.brake_pub = self.create_publisher(Bool, '/stm/brake', 10)
-        self.reverse_pub = self.create_publisher(Bool, '/stm/reverse_command', 10)
+        self.steering_angle_pub = self.create_publisher(Int16, '/stm/steering_angle', 1)
+        self.motor_power_pub = self.create_publisher(Int8, '/stm/motor_power', 1)
+        self.brake_pub = self.create_publisher(Bool, '/stm/brake', 1)
+        self.reverse_pub = self.create_publisher(Bool, '/stm/reverse_command', 1)
 
-        self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
-        self.create_subscription(Float32, '/stm/read_odometer', self.odom_callback, 10)
-        self.create_subscription(Int8, '/obstacle_detected', self.obstacle_callback, 10)
-        self.create_subscription(String, '/detected_signs', self.sign_callback, 10)
+        self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 1)
+        self.create_subscription(Float32, '/stm/read_odometer', self.odom_callback, 1)
+        self.create_subscription(Int8, '/obstacle_detected', self.obstacle_callback, 1)
+        self.create_subscription(String, '/detected_signs', self.sign_callback, 1)
 
         # ---- Durum degiskenleri ----
         self.current_velocity = 0.0
@@ -170,6 +183,9 @@ class CmdVelSubscriber(Node):
 
         self.last_odom = None
         self.last_odom_time = None
+        self.last_odom_rx_time = None
+        self.last_cmd_vel_time = None
+        self.last_safety_reason = None
         self.obstacle_detected = False
         self.kirmizi = False
         self.stall_timer = 0.0
@@ -212,8 +228,11 @@ class CmdVelSubscriber(Node):
             "TurnBoost", "StallBoost", "HedefAngZ_rad_s", "HedefAci_deg", 
             "YayinAci_deg", "Fren", "GeriVites"
         ])
+        self.last_csv_log_time = 0.0
+        self.last_csv_flush_time = monotonic()
+        self.last_status_log_time = 0.0
 
-        self.timer = self.create_timer(0.02, self.timer_callback)  # 50 Hz
+        self.timer = self.create_timer(0.02, self.timer_callback)  # 50 Hz kontrol, I/O throttle'li
         self.get_logger().info(f'CmdVel Node baslatildi. Veriler kaydediliyor: {self.csv_filename}')
 
     def _load_params(self):
@@ -262,6 +281,12 @@ class CmdVelSubscriber(Node):
         self.stall_boost_rate = gp('stall_boost_rate')
         self.absolute_max_motor_power = gp('absolute_max_motor_power')
 
+        self.cmd_vel_timeout = gp('cmd_vel_timeout')
+        self.odom_timeout = gp('odom_timeout')
+        self.status_log_hz = gp('status_log_hz')
+        self.csv_log_hz = gp('csv_log_hz')
+        self.csv_flush_hz = gp('csv_flush_hz')
+
         # --- DIREKSIYON ORANI (STEERING RATIO) HESAPLAMA ---
         # 1. Fiziksel tekerlek maksimum açısı (derece)
         self.max_physical_steer_deg = math.degrees(math.atan(self.wheelbase / self.min_turning_radius))
@@ -294,7 +319,8 @@ class CmdVelSubscriber(Node):
             self.reverse_velocity_pid.reset()
 
     def odom_callback(self, msg: Float32):
-        now = time()
+        now = monotonic()
+        self.last_odom_rx_time = now
         if self.last_odom is None:
             self.last_odom, self.last_odom_time = msg.data, now
             return
@@ -309,11 +335,14 @@ class CmdVelSubscriber(Node):
         try:
             is_red = "kirmizi" in msg.data
             if is_red and not self.kirmizi:
-                self.get_logger().info("Kirmizi isik algilandi.")
+                self.get_logger().warn("Kirmizi isik algilandi. Arac durdurulacak.")
+            self.kirmizi = is_red
         except Exception as e:
             self.get_logger().error(f"Levha verisi islenemedi: {e}")
 
     def cmd_vel_callback(self, msg: Twist):
+        self.last_cmd_vel_time = monotonic()
+
         if self.obstacle_detected:
             self.target_velocity = 0.0
             return
@@ -358,25 +387,56 @@ class CmdVelSubscriber(Node):
             min(self.STEER_MAX_LEFT, target_steer)
         )
 
+    def _publish_safety_stop(self, reason):
+        # Kritik durumda eski cmd_vel'in STM tarafinda kalmasina izin verme.
+        # Fren uygularken direksiyonu ani merkezlemek yerine son aciyi koruyoruz.
+        self.last_motor_power = 0
+        self.last_brake = True
+        self.motor_power_pub.publish(Int8(data=0))
+        self.brake_pub.publish(Bool(data=True))
+        self.steering_angle_pub.publish(Int16(data=self.last_steering_deg))
+        self.reverse_pub.publish(Bool(data=self.reverse_active))
+
+        self.velocity_pid.reset()
+        self.reverse_velocity_pid.reset()
+        self.velocity_ramp.reset(0.0)
+        self.reverse_velocity_ramp.reset(0.0)
+        self.stall_timer = 0.0
+        self.reverse_stall_timer = 0.0
+
+        if reason != self.last_safety_reason:
+            self.get_logger().error(f'[SAFETY STOP] {reason}')
+            self.last_safety_reason = reason
+
     def timer_callback(self):
-        if self.kirmizi:
-            return
+        now = monotonic()
 
+        safety_reason = None
         if self.obstacle_detected:
-            self.motor_power_pub.publish(Int8(data=0))
-            self.brake_pub.publish(Bool(data=True))
-            self.steering_angle_pub.publish(Int16(data=0))
-            self.reverse_pub.publish(Bool(data=self.reverse_active))
-            self.velocity_pid.reset()
-            self.reverse_velocity_pid.reset()
-            self.velocity_ramp.reset(0.0)
-            self.reverse_velocity_ramp.reset(0.0)
-            self.steering_ramp.reset(0.0)
-            self.stall_timer = 0.0
-            self.reverse_stall_timer = 0.0
+            safety_reason = 'ENGEL'
+        elif self.kirmizi:
+            safety_reason = 'KIRMIZI_ISIK'
+        elif self.last_cmd_vel_time is None or (now - self.last_cmd_vel_time) > self.cmd_vel_timeout:
+            cmd_age = float('inf') if self.last_cmd_vel_time is None else (now - self.last_cmd_vel_time)
+            safety_reason = (
+                f'CMD_VEL_TIMEOUT age={cmd_age:.2f}s > {self.cmd_vel_timeout:.2f}s'
+            )
+        elif abs(self.target_velocity) > 1e-3:
+            odom_age = float('inf') if self.last_odom_rx_time is None else (now - self.last_odom_rx_time)
+            if odom_age > self.odom_timeout:
+                safety_reason = (
+                    f'ODOM_TIMEOUT age={odom_age:.2f}s > {self.odom_timeout:.2f}s'
+                )
+
+        if safety_reason is not None:
+            self._publish_safety_stop(safety_reason)
+            self.last_pid_time = now
             return
 
-        now = time()
+        if self.last_safety_reason is not None:
+            self.get_logger().info('[SAFETY] Veriler normale dondu, kontrol yeniden aktif.')
+            self.last_safety_reason = None
+
         dt = 0.02 if self.last_pid_time is None else max(1e-3, now - self.last_pid_time)
         self.last_pid_time = now
 
@@ -521,40 +581,48 @@ class CmdVelSubscriber(Node):
         self.brake_pub.publish(Bool(data=self.last_brake))
         self.steering_angle_pub.publish(Int16(data=self.last_steering_deg))
 
-        # ---- CSV Dosyasina Yazma ----
-        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        # ---- CSV / TERMINAL I/O THROTTLE ----
         fren_durumu = "EVET" if self.last_brake else "HAYIR"
         geri_vites_durumu = "EVET" if self.reverse_active else "HAYIR"
 
-        self.csv_writer.writerow([
-            current_time_str,
-            f"{self.target_velocity:.2f}",
-            f"{self.current_velocity:.2f}",
-            self.last_motor_power,
-            f"{turn_boost:.1f}",
-            f"{stall_boost:.1f}",
-            f"{self.angular_z_filtered:.3f}",
-            f"{self.target_steering_deg:.1f}",
-            self.last_steering_deg,
-            fren_durumu,
-            geri_vites_durumu
-        ])
-        self.csv_file.flush()
+        if self.csv_log_hz > 0.0 and (now - self.last_csv_log_time) >= (1.0 / self.csv_log_hz):
+            self.last_csv_log_time = now
+            current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            self.csv_writer.writerow([
+                current_time_str,
+                f"{self.target_velocity:.2f}",
+                f"{self.current_velocity:.2f}",
+                self.last_motor_power,
+                f"{turn_boost:.1f}",
+                f"{stall_boost:.1f}",
+                f"{self.angular_z_filtered:.3f}",
+                f"{self.target_steering_deg:.1f}",
+                self.last_steering_deg,
+                fren_durumu,
+                geri_vites_durumu
+            ])
 
-        self.get_logger().info(
-            f'HedefLinX: {self.target_velocity:5.2f} | '
-            f'AnlikHiz: {self.current_velocity:5.2f} | '
-            f'Vites: {"GERI" if self.reverse_active else "ILERI":5s} | '
-            f'Motor: {self.last_motor_power:3d} '
-            f'(turn={turn_boost:.1f}, stall={stall_boost:.1f}) | '
-            f'HedefAngZ: {self.angular_z_filtered:+.3f} | '
-            f'HedefAci: {self.target_steering_deg:+6.1f} | '
-            f'YayinAci: {self.last_steering_deg:4d} | '
-            f'Fren: {fren_durumu}'
-        )
+        if self.csv_flush_hz > 0.0 and (now - self.last_csv_flush_time) >= (1.0 / self.csv_flush_hz):
+            self.csv_file.flush()
+            self.last_csv_flush_time = now
+
+        if self.status_log_hz > 0.0 and (now - self.last_status_log_time) >= (1.0 / self.status_log_hz):
+            self.last_status_log_time = now
+            self.get_logger().info(
+                f'HedefLinX: {self.target_velocity:5.2f} | '
+                f'AnlikHiz: {self.current_velocity:5.2f} | '
+                f'Vites: {"GERI" if self.reverse_active else "ILERI":5s} | '
+                f'Motor: {self.last_motor_power:3d} '
+                f'(turn={turn_boost:.1f}, stall={stall_boost:.1f}) | '
+                f'HedefAngZ: {self.angular_z_filtered:+.3f} | '
+                f'HedefAci: {self.target_steering_deg:+6.1f} | '
+                f'YayinAci: {self.last_steering_deg:4d} | '
+                f'Fren: {fren_durumu}'
+            )
 
     def destroy_node(self):
         if hasattr(self, 'csv_file') and not self.csv_file.closed:
+            self.csv_file.flush()
             self.csv_file.close()
             self.get_logger().info('CSV dosyasi guvenle kapatildi.')
         super().destroy_node()
@@ -564,6 +632,9 @@ def main(args=None):
     rclpy.init(args=args)
     node = CmdVelSubscriber()
     try:
+        # Bu node paylasilan kontrol durumuna sahip; deterministik siralama icin
+        # bilerek SingleThreadedExecutor (rclpy.spin) kullaniyoruz. Paralellik
+        # Nav2/sensor process'lerinin CPU affinity ile ayrilmasinda saglaniyor.
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

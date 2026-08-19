@@ -14,7 +14,7 @@ from sensor_msgs_py import point_cloud2
 
 from tf2_ros import Buffer, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
-
+from nav2_msgs.srv import ClearEntireCostmap
 
 def generate_wall_points(
     cx: float,
@@ -76,12 +76,12 @@ class SignDynamicObstacle(Node):
 
         # Duvar 15m × 1m × 3m
         self.wall_length  = 15.0
-        self.wall_width   =  1.0
+        self.wall_width   =  0.01
         self.wall_z_min   =  0.0
-        self.wall_z_max   =  3.0  
+        self.wall_z_max   =  2.0  
 
         # Duvar kaç saniye sonra silinsin
-        self.wall_duration = 40.0
+        self.wall_duration = 20.0
 
         # Her levha tipi için ayrı bayrak
         self.walls: dict = {}
@@ -121,6 +121,11 @@ class SignDynamicObstacle(Node):
             10,
         )
 
+        self.clear_global_cli = self.create_client(
+            ClearEntireCostmap,
+            "/global_costmap/clear_entirely_global_costmap"
+        )
+
         # Aktif duvarları 5 Hz'de yayınla
         self.publish_timer = self.create_timer(0.2, self.publish_all_walls)
 
@@ -138,6 +143,10 @@ class SignDynamicObstacle(Node):
             return
 
         sign_configs = {
+            "sol": {
+                "forward": self.front_wall_forward,
+                "lateral": self.front_wall_lateral,
+            },
             "ileriden_sola": {
                 "forward": self.front_wall_forward,
                 "lateral": self.front_wall_lateral,
@@ -147,6 +156,10 @@ class SignDynamicObstacle(Node):
                 "lateral": self.left_wall_lateral,
             },
             "sag": {
+                "forward": self.front_wall_forward,
+                "lateral": self.front_wall_lateral,
+            },
+            "ileriden_saga": {
                 "forward": self.front_wall_forward,
                 "lateral": self.front_wall_lateral,
             },
@@ -186,7 +199,7 @@ class SignDynamicObstacle(Node):
                     self.right_wall_forward,
                     self.right_wall_lateral,
                 )
-            if sign_key == "sag" and "sagadon_sol" not in self.walls:
+            if sign_key == "ileriden_saga" and "sagadon_sol" not in self.walls:
                 self.get_logger().info("+Sol duvar da olusturuluyor")
                 self.create_wall(
                     "sagadon_sol",
@@ -234,7 +247,7 @@ class SignDynamicObstacle(Node):
 
         # soladon     → duvar ARAÇA DIK (önü keser, düz gitmeyi engeller)
         # soladonulmez → duvar ARAÇA PARALEL (sol seridi keser)
-        if sign_key == "sag" or sign_key == "ileriden_sola":
+        if sign_key == "ileriden_saga" or sign_key == "ileriden_sola" or sign_key == "girisiyok": 
             wall_yaw = yaw + math.pi / 2.0          
         else:
             wall_yaw = yaw
@@ -371,21 +384,25 @@ class SignDynamicObstacle(Node):
         del_all.action          = Marker.DELETEALL
         marker_array.markers.append(del_all)
         self.marker_pub.publish(marker_array)
- 
-        # Costmap'i temizle: bos nokta bulutu gonder
-        # Birden fazla kez gonder ki costmap kesinlikle temizlesin.
-        header = Header()
-        header.frame_id = "odom"
-        header.stamp    = self.get_clock().now().to_msg()
-        empty_cloud = point_cloud2.create_cloud_xyz32(header, [])
- 
-        for _ in range(5):
-            self.obstacle_pub.publish(empty_cloud)
-            self.obstacle_global_pub.publish(empty_cloud)
+  
+  # Global costmap'i tamamen temizle
+
+        self._call_clear_costmaps()
  
         self.get_logger().info(f"DUVAR SILINDI [{sign_key}] — costmap temizlendi")
 
+    def _call_clear_costmaps(self):
+        req = ClearEntireCostmap.Request()
 
+        if self.clear_global_cli.service_is_ready():
+            self.clear_global_cli.call_async(req)
+            self.get_logger().info(
+                "GLOBAL COSTMAP tamamen temizleme servisi cagrildi"
+            )
+        else:
+            self.get_logger().warn(
+                "global_costmap clear servisi hazir degil"
+            )
 
     def destroy_node(self):
         for wall in self.walls.values():

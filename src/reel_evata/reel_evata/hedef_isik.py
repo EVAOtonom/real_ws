@@ -89,10 +89,10 @@ class SequentialNav2(Node):
         self.traffic_light_zones = [
 
             {
-                'x_min': -71.6,
-                'x_max': -63.5,
-                'y_min': -15.4,
-                'y_max': -7.26
+                'x_min': -86.3,
+                'x_max': -71.1,
+                'y_min': -22.3,
+                'y_max': -7.99
             },
 
             {

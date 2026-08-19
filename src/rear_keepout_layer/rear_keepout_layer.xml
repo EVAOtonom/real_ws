@@ -1,0 +1,10 @@
+<library path="rear_keepout_layer">
+  <class
+    name="rear_keepout_layer::RearKeepoutLayer"
+    type="rear_keepout_layer::RearKeepoutLayer"
+    base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Vehicle-following U-shaped lethal keepout layer for preventing global paths from routing behind an Ackermann vehicle.
+    </description>
+  </class>
+</library>
