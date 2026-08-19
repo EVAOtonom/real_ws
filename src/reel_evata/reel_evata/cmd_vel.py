@@ -310,9 +310,6 @@ class CmdVelSubscriber(Node):
             is_red = "kirmizi" in msg.data
             if is_red and not self.kirmizi:
                 self.get_logger().info("Kirmizi isik algilandi.")
-                self.velocity_pid.reset()
-                self.reverse_velocity_pid.reset()
-            self.kirmizi = is_red
         except Exception as e:
             self.get_logger().error(f"Levha verisi islenemedi: {e}")
 

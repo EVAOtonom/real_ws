@@ -173,15 +173,15 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      desired_linear_vel: 0.8
+      desired_linear_vel: 0.6
 
       # Normal navigasyonda geri sürüş kapalı.
       allow_reversing: false
 
       min_approach_linear_velocity: 0.08
-      approach_velocity_scaling_dist: 2.0
+      approach_velocity_scaling_dist: 8.0
 
-      max_allowed_time_to_collision_up_to_carrot: 5.0
+      max_allowed_time_to_collision_up_to_carrot: 10.0
       use_collision_detection: true
 
       # ==========================================
@@ -189,7 +189,7 @@ controller_server:
       # ==========================================
 
       # Daha uzağa bak → daha yumuşak direksiyon
-      lookahead_dist: 5.0
+      lookahead_dist: 6.0
 
       min_lookahead_dist: 1.8
       max_lookahead_dist: 7.0
@@ -198,7 +198,7 @@ controller_server:
 
       use_velocity_scaled_lookahead_dist: true
 
-      use_fixed_curvature_lookahead: true
+      use_fixed_curvature_lookahead: false
 
       use_interpolation: true
 
@@ -220,9 +220,9 @@ controller_server:
 
       use_regulated_linear_velocity_scaling: true
 
-      regulated_linear_scaling_min_radius: 2.5
+      regulated_linear_scaling_min_radius: 2.7
 
-      regulated_linear_scaling_min_speed: 0.45
+      regulated_linear_scaling_min_speed: 0.4
 
       use_cost_regulated_linear_velocity_scaling: true
 
@@ -241,7 +241,7 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
       # Park sırasında daha kontrollü hız.
-      desired_linear_vel: 0.65
+      desired_linear_vel: 0.50
 
       # Sadece park.py bu controller'ı çağıracak.
       allow_reversing: false
@@ -318,8 +318,8 @@ local_costmap:
 
       rolling_window: true
 
-      width: 16
-      height: 16
+      width: 20
+      height: 12
       resolution: 0.1
 
       footprint: "[[1.35, 0.775], [1.35, -0.775], [-1.35, -0.775], [-1.35, 0.775]]"
@@ -330,7 +330,7 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
 
         cost_scaling_factor: 1.2
-        inflation_radius: 2.0
+        inflation_radius: 1.5
 
         always_send_full_costmap: False
 
@@ -358,8 +358,8 @@ local_costmap:
           raytrace_min_range: 3.0
           obstacle_min_range: 3.0
 
-          raytrace_max_range: 7.0
-          obstacle_max_range: 6.8
+          raytrace_max_range: 10.0
+          obstacle_max_range: 9.0
 
 
           # pointcloud_to_laserscan use_inf=True olduğu için
@@ -367,7 +367,7 @@ local_costmap:
           inf_is_valid: true
 
           # Gerçek LaserScan sürekli geldiği için eski lidar ölçümünü tutma.
-          observation_persistence: 6.0
+          observation_persistence: 3.0
 
 
 
@@ -377,7 +377,7 @@ global_costmap:
   global_costmap:
     ros__parameters:
 
-      always_send_full_costmap: True
+      always_send_full_costmap: False
 
       update_frequency: 1.0
       publish_frequency: 1.0
@@ -414,16 +414,16 @@ global_costmap:
           data_type: "LaserScan"
 
           # pointcloud_to_laserscan range_max ile aynı clearing menzili.
-          raytrace_max_range: 7.0
-          raytrace_min_range: 0.5
+          raytrace_max_range: 10.0
+          raytrace_min_range: 3.0
 
           # Son 0.5 m yalnız clearing payı olarak bırakılıyor.
-          obstacle_max_range: 7.1
-          obstacle_min_range: 0.5
+          obstacle_max_range: 9.0
+          obstacle_min_range: 3.0
 
           inf_is_valid: true
 
-          observation_persistence: 6.0
+          observation_persistence: 3.0
 
 
 
@@ -468,7 +468,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
 
         cost_scaling_factor: 1.2
-        inflation_radius: 2.0
+        inflation_radius: 1.5
 
 
 map_server:
@@ -508,7 +508,7 @@ planner_server:
       # PATH KALITESI
       # ==========================================
 
-      downsample_costmap: false
+      downsample_costmap: true
       downsampling_factor: 1
 
       tolerance: 0.5

@@ -15,6 +15,8 @@ from sensor_msgs_py import point_cloud2
 from tf2_ros import Buffer, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
+from nav2_msgs.srv import ClearEntireCostmap
+
 
 def generate_wall_points(
     cx: float,
@@ -24,12 +26,11 @@ def generate_wall_points(
     width: float,
     z_min: float = 0.0,
     z_max: float = 1.0,
-    xy_res: float = 0.10,
-    z_res: float = 0.20,
+    xy_res: float = 0.70,
+    z_res: float = 0.80,
 ) -> list:
     """
     Duvarın odom-frame'indeki nokta bulutunu döndürür.
-    Duvar yaw açısına paralel, length × width × height boyutlarında.
     """
     points = []
 
@@ -60,28 +61,18 @@ class SignDynamicObstacle(Node):
         super().__init__("levha_dinamik_engel")
 
         # Levha bu mesafeden yakınsa tetikle
-        self.sign_trigger_distance = 5.0
+        self.sign_trigger_distance = 10.0
+        self.barriers = self.load_barriers()
 
-        #önüne duvar: forward=15m, lateral=0
-        self.front_wall_forward = 15.0
-        self.front_wall_lateral = 0.0
-        
-        #sag duvar
-        self.right_wall_forward = 7.0
-        self.right_wall_lateral = -4.0
-
-        #soluna duvar: forward=7m, lateral=+4m (sol)
-        self.left_wall_forward  = 7.0
-        self.left_wall_lateral  = 4.0
-
-        # Duvar 15m × 1m × 3m
-        self.wall_length  = 15.0
-        self.wall_width   =  1.0
+        self.wall_width   =  0.1
         self.wall_z_min   =  0.0
-        self.wall_z_max   =  3.0  
+        self.wall_z_max   =  2.0
+
+        # hatası olsa bile yol kenarlarında boşluk kalmasın
+        self.wall_edge_margin = 0.5
 
         # Duvar kaç saniye sonra silinsin
-        self.wall_duration = 40.0
+        self.wall_duration = 20.0
 
         # Her levha tipi için ayrı bayrak
         self.walls: dict = {}
@@ -121,10 +112,37 @@ class SignDynamicObstacle(Node):
             10,
         )
 
+        # Costmap temizleme servisleri
+        self.clear_local_cli = self.create_client(
+            ClearEntireCostmap,
+            "/local_costmap/clear_entirely_local_costmap",
+        )
+        self.clear_global_cli = self.create_client(
+            ClearEntireCostmap,
+            "/global_costmap/clear_entirely_global_costmap",
+        )
+
         # Aktif duvarları 5 Hz'de yayınla
         self.publish_timer = self.create_timer(0.2, self.publish_all_walls)
 
         self.get_logger().info("Levha Dinamik Engel Node Baslatildi")
+
+    def load_barriers(self):
+        try:
+            with open("/home/otonom/real_ws/src/reel_evata/reel_evata/barriers.json", "r") as f:
+                data = json.load(f)
+
+            self.get_logger().info(
+                f"{len(data['junctions'])} kavsak yuklendi"
+            )
+
+            return data["junctions"]
+
+        except Exception as e:
+            self.get_logger().error(
+                f"Barrier dosyasi okunamadi: {e}"
+            )
+            return []
 
     # ══════════════════════════════════════════
     # LEVHA CALLBACK
@@ -133,40 +151,45 @@ class SignDynamicObstacle(Node):
     def sign_callback(self, msg: String):
         try:
             data = json.loads(msg.data)
+
         except Exception as e:
-            self.get_logger().warn(f"JSON parse hatasi: {e}")
+            self.get_logger().warn(
+                f"JSON parse hatasi: {e}"
+            )
             return
 
-        sign_configs = {
-            "ileriden_sola": {
-                "forward": self.front_wall_forward,
-                "lateral": self.front_wall_lateral,
-            },
-            "soladonulmez": {
-                "forward": self.left_wall_forward,
-                "lateral": self.left_wall_lateral,
-            },
-            "sag": {
-                "forward": self.front_wall_forward,
-                "lateral": self.front_wall_lateral,
-            },
-            "sagadonulmez": {
-                "forward": self.right_wall_forward,
-                "lateral": self.right_wall_lateral,
-            },
-            "girisiyok": {
-                "forward": self.front_wall_forward,
-                "lateral": self.front_wall_lateral,
-            },                                    
+        junction = self.find_current_junction()
+
+        if junction is None:
+            return
+
+#LEVHA TETİKLEME
+        sign_map = {
+            "sol": ["front_barrier", "right_barrier"],
+            "soladonulmez": ["left_barrier"],
+            "sag": ["front_barrier", "left_barrier"],
         }
 
-        for sign_key, cfg in sign_configs.items():
+        for sign_key, barrier_names in sign_map.items():
 
             if sign_key not in data:
                 continue
 
-            # Bu levha için duvar zaten oluşturulduysa atla
-            if sign_key in self.walls:
+            wall_keys = [
+                f"{junction['id']}_{sign_key}_{bname}" for bname in barrier_names
+            ]
+
+            if all(k in self.walls for k in wall_keys):
+                continue
+
+            other_active = any(
+                k.startswith(f"{junction['id']}_") and k not in wall_keys
+                for k in self.walls
+            )
+            if other_active:
+                self.get_logger().warn(
+                    f"Junction {junction['id']} icin baska bir barikat zaten aktif, [{sign_key}] atlandi."
+                )
                 continue
 
             distance = float(data[sign_key])
@@ -174,91 +197,151 @@ class SignDynamicObstacle(Node):
             if distance > self.sign_trigger_distance:
                 continue
 
-            self.get_logger().info(
-                f"[{sign_key}] levhasi algilandi, mesafe={distance:.2f}m → duvar olusturuluyor"
-            )
-            self.create_wall(sign_key, cfg["forward"], cfg["lateral"])
-            
-            if sign_key == "ileriden_sola" and "soladon_sag" not in self.walls:
-                self.get_logger().info("+Sag duvar da olusturuluyor")
-                self.create_wall(
-                    "soladon_sag",
-                    self.right_wall_forward,
-                    self.right_wall_lateral,
-                )
-            if sign_key == "sag" and "sagadon_sol" not in self.walls:
-                self.get_logger().info("+Sol duvar da olusturuluyor")
-                self.create_wall(
-                    "sagadon_sol",
-                    self.left_wall_forward,
-                    self.left_wall_lateral,
-                )                
-            
+            for wall_key, barrier_name in zip(wall_keys, barrier_names):
 
+                if wall_key in self.walls:
+                    continue
+
+                barrier = junction.get(barrier_name)
+
+                if barrier is None:
+                    self.get_logger().warn(
+                        f"Junction {junction['id']} icin {barrier_name} tanimli degil, "
+                        f"[{sign_key}] icin bu duvar atlandi."
+                    )
+                    continue
+
+                self.get_logger().info(
+                    f"[{sign_key}] bulundu -> {barrier_name} aktif"
+                )
+
+                self.create_wall(
+                    wall_key,
+                    barrier,
+                )
+
+    def find_current_junction(self):
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                "map",
+                "base_footprint",
+                rclpy.time.Time(),
+            )
+
+        except Exception as e:
+            self.get_logger().warn(
+                f"TF lookup hatasi: {e}"
+            )
+            return None
+
+        robot_x = transform.transform.translation.x
+        robot_y = transform.transform.translation.y
+
+        for junction in self.barriers:
+
+            area = junction["trigger_area"]
+
+            if (
+                area["xmin"] <= robot_x <= area["xmax"]
+                and
+                area["ymin"] <= robot_y <= area["ymax"]
+            ):
+                self.get_logger().info(
+                    f"Kavsak bulundu: {junction['id']} "
+                    f"robot=({robot_x:.2f},{robot_y:.2f})"
+                )
+                return junction
+
+        return None
+
+    # ══════════════════════════════════════════
+    # MAP -> ODOM DÖNÜŞÜMÜ
+    # ══════════════════════════════════════════
+
+    def transform_map_point_to_odom(self, x: float, y: float):
+        """
+        barriers.json'daki koordinatlar map frame'inde sabittir.
+        Bu fonksiyon onları anlık map->odom TF'ine göre odom frame'ine
+        çevirir, böylece robotun odom orijini nerede başlarsa başlasın
+        duvar haritadaki gerçek yerinde kalır.
+        """
+        try:
+            map_to_odom = self.tf_buffer.lookup_transform(
+                "odom",
+                "map",
+                rclpy.time.Time(),
+            )
+
+        except Exception as e:
+            self.get_logger().warn(
+                f"map->odom TF alinamadi: {e}"
+            )
+            return None
+
+        tx = map_to_odom.transform.translation.x
+        ty = map_to_odom.transform.translation.y
+
+        q = map_to_odom.transform.rotation
+        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+
+        ox = tx + x * math.cos(yaw) - y * math.sin(yaw)
+        oy = ty + x * math.sin(yaw) + y * math.cos(yaw)
+
+        return ox, oy
 
     # ══════════════════════════════════════════
     # DUVAR OLUŞTUR
     # ══════════════════════════════════════════
 
-    def create_wall(self, sign_key: str, forward_offset: float, lateral_offset: float):
+    def create_wall(self, sign_key: str, barrier: dict):
 
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                "odom",
-                "base_footprint",
-                rclpy.time.Time(),
+        p1 = self.transform_map_point_to_odom(barrier["x1"], barrier["y1"])
+        p2 = self.transform_map_point_to_odom(barrier["x2"], barrier["y2"])
+
+        if p1 is None or p2 is None:
+            self.get_logger().warn(
+                f"[{sign_key}] map->odom TF hazir degil, duvar olusturulamadi."
             )
-        except Exception as e:
-            self.get_logger().warn(f"TF lookup hatasi: {e}")
             return
 
-        tx = transform.transform.translation.x
-        ty = transform.transform.translation.y
-        q  = transform.transform.rotation
+        x1, y1 = p1
+        x2, y2 = p2
 
-        yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
 
-        # Araç koordinat sisteminde offset → odom frame'e çevir
-        # ROS konvansiyonu: +x = ileri, +y = SOL
-        # lateral_offset pozitif → sol, negatif → sağ
-        cx = (
-            tx
-            + forward_offset * math.cos(yaw)
-            - lateral_offset * math.sin(yaw)
-        )
-        cy = (
-            ty
-            + forward_offset * math.sin(yaw)
-            + lateral_offset * math.cos(yaw)
-        )
+        dx = x2 - x1
+        dy = y2 - y1
 
-        # soladon     → duvar ARAÇA DIK (önü keser, düz gitmeyi engeller)
-        # soladonulmez → duvar ARAÇA PARALEL (sol seridi keser)
-        if sign_key == "sag" or sign_key == "ileriden_sola":
-            wall_yaw = yaw + math.pi / 2.0          
-        else:
-            wall_yaw = yaw
+        length = math.hypot(dx, dy)
+        length += 2.0 * self.wall_edge_margin
 
+        yaw = math.atan2(dy, dx)
 
-        # Durumu kaydet — bu koordinatlar artık SABIT, araçla hareket etmez
         def on_wall_timeout(key=sign_key):
             self.remove_wall(key)
- 
-        timer = self.create_timer(self.wall_duration, on_wall_timeout)
 
+        timer = self.create_timer(
+            self.wall_duration,
+            on_wall_timeout
+        )
 
         self.walls[sign_key] = {
-            "cx":    cx,
-            "cy":    cy,
-            "yaw":   wall_yaw,
+            "cx": cx,
+            "cy": cy,
+            "yaw": yaw,
+            "length": length,
             "timer": timer,
         }
 
         self.get_logger().info(
-            f"DUVAR KILITLEDI [{sign_key}] | "
-            f"odom=({cx:.2f}, {cy:.2f}) | "
-            f"wall_yaw={math.degrees(wall_yaw):.1f}° | "
-            f"{self.wall_duration:.0f}s sonra silinecek"
+            f"BARIYER [{sign_key}] "
+            f"merkez=({cx:.2f},{cy:.2f}) "
+            f"uzunluk={length:.2f}m"
+        )
+        self.get_logger().warn(
+            f"Barrier ciziliyor: ({x1:.2f},{y1:.2f}) -> ({x2:.2f},{y2:.2f})"
         )
 
     # ══════════════════════════════════════════
@@ -283,7 +366,7 @@ class SignDynamicObstacle(Node):
                 wall["cx"],
                 wall["cy"],
                 wall["yaw"],
-                self.wall_length,
+                wall["length"],
                 self.wall_width,
                 self.wall_z_min,
                 self.wall_z_max,
@@ -331,7 +414,7 @@ class SignDynamicObstacle(Node):
         marker.pose.orientation.z = wall_q[2]
         marker.pose.orientation.w = wall_q[3]
 
-        marker.scale.x = self.wall_length
+        marker.scale.x = wall["length"]
         marker.scale.y = self.wall_width
         marker.scale.z = self.wall_z_max - self.wall_z_min
 
@@ -371,21 +454,35 @@ class SignDynamicObstacle(Node):
         del_all.action          = Marker.DELETEALL
         marker_array.markers.append(del_all)
         self.marker_pub.publish(marker_array)
- 
+
         # Costmap'i temizle: bos nokta bulutu gonder
         # Birden fazla kez gonder ki costmap kesinlikle temizlesin.
         header = Header()
         header.frame_id = "odom"
         header.stamp    = self.get_clock().now().to_msg()
         empty_cloud = point_cloud2.create_cloud_xyz32(header, [])
- 
+
         for _ in range(5):
             self.obstacle_pub.publish(empty_cloud)
             self.obstacle_global_pub.publish(empty_cloud)
- 
+
+        # Costmap'i servis ile zorla temizle (raytrace ile temizlenmeyen kalıntı hücreler için)
+        self._call_clear_costmaps()
+
         self.get_logger().info(f"DUVAR SILINDI [{sign_key}] — costmap temizlendi")
 
+    def _call_clear_costmaps(self):
+        req = ClearEntireCostmap.Request()
 
+        if self.clear_local_cli.service_is_ready():
+            self.clear_local_cli.call_async(req)
+        else:
+            self.get_logger().warn("local_costmap clear servisi hazir degil")
+
+        if self.clear_global_cli.service_is_ready():
+            self.clear_global_cli.call_async(req)
+        else:
+            self.get_logger().warn("global_costmap clear servisi hazir degil")
 
     def destroy_node(self):
         for wall in self.walls.values():
