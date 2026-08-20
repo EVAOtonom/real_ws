@@ -1,6 +1,25 @@
 /**:
   ros__parameters:
 
+    # ============================================================
+    # LIO-SAM - LOCALIZATION / ODOMETRY ONLY
+    # ============================================================
+    #
+    # Bu profil:
+    #   - harita kaydetmez
+    #   - loop closure yapmaz
+    #   - global map görselleştirmesi üretmez
+    #   - mapOptimization'ı yalnız LiDAR odometry correction için kullanır
+    #   - keyframe ve local-map yükünü azaltır
+    #
+    # UYARI:
+    # LIO-SAM'in standart mimarisi eski keyframe cloud'larını tamamen
+    # bounded/sliding-window biçiminde silmez. Bu ayarlar büyümeyi ciddi
+    # azaltır fakat saatler/günler süren sonsuz tur kullanımında RAM'in
+    # matematiksel olarak sabit kalacağını garanti etmez.
+    # ============================================================
+
+
     # =========================
     # TOPICS
     # =========================
@@ -9,11 +28,10 @@
 
     imuTopic: "/imu/data"
 
-    # Yüksek frekanslı LIO-SAM odometrisi.
-    # IMU frekansına yakın yayınlanır.
+    # IMU preintegration tarafından üretilen yüksek frekanslı odometri.
     odomTopic: "/lio_sam/odometry/imu"
 
-    # GPS kullanılmıyor.
+    # GPS bu LIO-SAM profilinde kullanılmıyor.
     gpsTopic: "/unused/gps"
 
 
@@ -26,15 +44,15 @@
     odometryFrame: "odom"
     mapFrame: "map"
 
-    # TF yalnızca EKF tarafından yayınlanacak.
+    # TF'yi dışarıdaki EKF yayınlıyorsa false kalmalı.
     publishTF: false
 
 
     # =========================
-    # GPS SETTINGS
+    # GPS / HEADING
     # =========================
 
-    # GPS kullanılmadığı ve IMU yaw drift yaptığı için false.
+    # Mevcut çalışan davranış korunuyor.
     useImuHeadingInitialization: true
 
     useGpsElevation: false
@@ -43,29 +61,35 @@
 
 
     # =========================
-    # EXPORT SETTINGS
+    # EXPORT
     # =========================
 
+    # Sadece lokalizasyon: PCD kaydetme.
     savePCD: false
     savePCDDirectory: "/LIO-SAM_MAPS/"
 
 
     # =========================
-    # LIDAR SETTINGS
+    # LIDAR
     # =========================
 
     sensor: velodyne
+
+    # Helios / RS LiDAR mevcut ayarları korunuyor.
     N_SCAN: 32
     Horizon_SCAN: 900
 
+    # Her ring kullanılır.
     downsampleRate: 1
 
+    # Araç gövdesi / çok yakın self-return'leri dışarıda bırak.
+    # Mevcut çalışan değer korunuyor.
     lidarMinRange: 3.0
     lidarMaxRange: 80.0
 
 
     # =========================
-    # IMU SETTINGS
+    # IMU
     # =========================
 
     imuAccNoise: 3.9939570888238808e-03
@@ -82,6 +106,7 @@
     # EXTRINSIC CALIBRATION
     # =========================
 
+    # Mevcut kalibrasyon aynen korunuyor.
     extrinsicTrans: [0.0, 0.0, -0.15]
 
     extrinsicRot: [1.0,  0.0,  0.0,
@@ -97,6 +122,7 @@
     # FEATURE EXTRACTION
     # =========================
 
+    # Feature kalitesini değiştirmiyorum; lokalizasyon doğruluğuna doğrudan etki eder.
     edgeThreshold: 1.0
     surfThreshold: 0.1
 
@@ -108,12 +134,12 @@
     # VOXEL FILTER
     # =========================
 
+    # Odometri scan'inde çok agresif downsample yapmıyoruz.
     odometrySurfLeafSize: 0.4
 
-    # Odometri odaklı kullanım için biraz büyütüldü.
-    # CPU yükünü azaltır.
-    mappingCornerLeafSize: 0.3
-    mappingSurfLeafSize: 0.5
+    # Mapping burada yalnız local scan-to-map correction için kullanılıyor.
+    mappingCornerLeafSize: 0.4
+    mappingSurfLeafSize: 0.6
 
 
     # =========================
@@ -125,49 +151,61 @@
 
 
     # =========================
-    # CPU
+    # CPU / MAPPING CORRECTION
     # =========================
 
-    numberOfCores: 10
+    # 10 core yerine 6 core:
+    # Nav2 / EKF / LiDAR driver için CPU bırakır.
+    numberOfCores: 6
 
-    # Her gelen LiDAR taramasını işle.
-    # LiDAR 10 Hz olduğu için mapping odometry yine en fazla 10 Hz olur.
-    mappingProcessInterval: 0.0
+    # LiDAR ~10 Hz ise 0.10 s her LiDAR taramasında en fazla bir
+    # mapping correction demektir. Burst/backlog durumunda map optimizer'ın
+    # arka arkaya eski frame işlemesini azaltır.
+    mappingProcessInterval: 0.10
 
 
     # =========================
-    # LOCAL MAP
+    # LOCAL KEYFRAME MAP
     # =========================
 
-    surroundingkeyframeAddingDistThreshold: 1.0
-    surroundingkeyframeAddingAngleThreshold: 0.2
+    # Sadece lokalizasyon için 1 m'de bir keyframe gereksiz.
+    # 1.5 m, pistte scan-to-map geometrisini korurken keyframe büyümesini azaltır.
+    surroundingkeyframeAddingDistThreshold: 1.5
 
-    surroundingKeyframeDensity: 2.0
+    # ~14.3 derece
+    surroundingkeyframeAddingAngleThreshold: 0.25
 
-    # Yalnızca odometri için daha küçük lokal çevre yeterli.
-    surroundingKeyframeSearchRadius: 15.0
+    # Lokal map içindeki keyframe pose'larını daha seyrek kullan.
+    surroundingKeyframeDensity: 2.5
+
+    # 15 m yerine 12 m local map:
+    # araç çevresinde yeterli geometri bırakıp CPU/RAM geçici çalışma setini azaltır.
+    surroundingKeyframeSearchRadius: 12.0
 
 
     # =========================
     # LOOP CLOSURE
     # =========================
 
+    # Lokalizasyon / odometri için kapalı.
     loopClosureEnableFlag: false
-    loopClosureFrequency: 1.0
+    loopClosureFrequency: 0.5
 
-    surroundingKeyframeSize: 50
+    # Loop closure kapalı olduğundan aşağıdakiler aktif kullanılmaz;
+    # parser uyumluluğu için tutuluyor.
+    surroundingKeyframeSize: 25
 
-    historyKeyframeSearchRadius: 15.0
+    historyKeyframeSearchRadius: 10.0
     historyKeyframeSearchTimeDiff: 30.0
-    historyKeyframeSearchNum: 25
+    historyKeyframeSearchNum: 10
     historyKeyframeFitnessScore: 0.3
 
 
     # =========================
-    # VISUALIZATION
+    # GLOBAL MAP VISUALIZATION
     # =========================
 
-    # Global harita görselleştirmesi kapalıya yakın.
+    # Global harita yayınlama / oluşturma yükünü fiilen kapat.
     globalMapVisualizationSearchRadius: 0.0
-    globalMapVisualizationPoseDensity: 50.0
-    globalMapVisualizationLeafSize: 5.0
+    globalMapVisualizationPoseDensity: 100.0
+    globalMapVisualizationLeafSize: 10.0

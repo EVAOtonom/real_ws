@@ -239,7 +239,7 @@ def generate_launch_description():
                     'scan_time': 0.105,
 
                     'range_min': 0.50,
-                    'range_max': 12.0,
+                    'range_max': 13.0,
 
                     'use_inf': True
                 }

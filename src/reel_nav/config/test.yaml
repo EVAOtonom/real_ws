@@ -173,7 +173,7 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      desired_linear_vel: 1.0
+      desired_linear_vel: 0.8
 
       # Normal navigasyonda geri sürüş kapalı.
       allow_reversing: false
@@ -224,7 +224,7 @@ controller_server:
 
       use_cost_regulated_linear_velocity_scaling: true
 
-      cost_scaling_dist: 1.5
+      cost_scaling_dist: 5.0
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 1.2
 
@@ -238,60 +238,75 @@ controller_server:
     ParkFollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      # Park sırasında daha kontrollü hız.
-      desired_linear_vel: 0.50
+      # ==========================================================
+      # HIZ
+      # ==========================================================
 
-      # Sadece park.py bu controller'ı çağıracak.
-      # Park planner REEDS_SHEPP olduğu için geri sürüşe izin ver.
-      allow_reversing: true
-      rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 1.5
+      desired_linear_vel: 0.35
+
+      # PARKTA ASLA GERİ GİTME
+      allow_reversing: false
 
       min_approach_linear_velocity: 0.08
-      approach_velocity_scaling_dist: 1.0
 
-      max_allowed_time_to_collision_up_to_carrot: 1.0
+      # Son noktaya daha erken hazırlan
+      approach_velocity_scaling_dist: 2.5
+
+
+      # ==========================================================
+      # COLLISION
+      # ==========================================================
+
       use_collision_detection: true
 
-      # ==========================================
-      # PARK LOOKAHEAD
-      # ==========================================
+      # 1 saniye park için çok kısa kalıyor.
+      max_allowed_time_to_collision_up_to_carrot: 3.0
 
-      # Park sırasında normal sürüşe göre
-      # daha yakındaki path geometrisini takip et.
-      lookahead_dist: 1.0
 
-      min_lookahead_dist: 0.8
-      max_lookahead_dist: 1.5
+      # ==========================================================
+      # LOOKAHEAD
+      # ==========================================================
 
-      lookahead_time: 1.0
+      # Park düşük hızda olduğu için sabit lookahead.
+      use_velocity_scaled_lookahead_dist: false
 
-      use_velocity_scaled_lookahead_dist: true
+      # İlk test: 1.5 m
+      lookahead_dist: 1.5
+
+      # Scaling kapalıyken bunlar kullanılmayacak.
+      min_lookahead_dist: 1.2
+      max_lookahead_dist: 2.0
+      lookahead_time: 2.0
 
       use_interpolation: true
 
       max_robot_pose_search_dist: 5.0
 
-      # ==========================================
-      # ACKERMANN
-      # ==========================================
 
-      # Araç yerinde dönemediği için false.
+      # ==========================================================
+      # ACKERMANN
+      # ==========================================================
+
+      # Araç yerinde dönemiyor.
       use_rotate_to_heading: false
 
       rotate_to_heading_angular_vel: 1.0
       rotate_to_heading_min_angle: 0.785
+
       max_angular_accel: 1.5
 
-      # ==========================================
-      # PARKTA VIRAJ HIZ KONTROLU
-      # ==========================================
+
+      # ==========================================================
+      # VIRAJ HIZ KONTROLÜ
+      # ==========================================================
 
       use_regulated_linear_velocity_scaling: true
 
-      regulated_linear_scaling_min_radius: 5.0
+      # Daha geniş park virajlarında da yavaşlamaya başla.
+      regulated_linear_scaling_min_radius: 7.0
 
-      regulated_linear_scaling_min_speed: 0.3
+      # Keskin yerde 0.30 yerine daha kontrollü.
+      regulated_linear_scaling_min_speed: 0.18
 
       use_cost_regulated_linear_velocity_scaling: false
 
@@ -317,9 +332,9 @@ local_costmap:
 
       # 20x20 @ 0.05 = 160000 hucre yerine 16x16 @ 0.10 = 25600 hucre.
       # 7 m max lookahead icin robot merkezden 8 m sinira sahip olmaya devam ediyor.
-      width: 16
-      height: 16
-      resolution: 0.10
+      width: 27
+      height: 27
+      resolution: 0.15
 
       footprint: "[[1.35, 0.775], [1.35, -0.775], [-1.35, -0.775], [-1.35, 0.775]]"
 
@@ -356,8 +371,8 @@ local_costmap:
           raytrace_min_range: 0.50
           obstacle_min_range: 0.50
 
-          raytrace_max_range: 10.0
-          obstacle_max_range: 9.0
+          raytrace_max_range: 13.0
+          obstacle_max_range: 12.0
 
 
           # pointcloud_to_laserscan use_inf=True olduğu için
@@ -412,11 +427,11 @@ global_costmap:
           data_type: "LaserScan"
 
           # pointcloud_to_laserscan range_max ile aynı clearing menzili.
-          raytrace_max_range: 10.0
+          raytrace_max_range: 12.0
           raytrace_min_range: 0.50
 
           # Son 0.5 m yalnız clearing payı olarak bırakılıyor.
-          obstacle_max_range: 9.0
+          obstacle_max_range: 12.0
           obstacle_min_range: 0.50
 
           inf_is_valid: true
@@ -439,8 +454,8 @@ global_costmap:
           raytrace_min_range: 3.0
           obstacle_min_range: 3.0
 
-          raytrace_max_range: 7.0
-          obstacle_max_range: 6.8
+          raytrace_max_range: 40.0
+          obstacle_max_range: 40.8
 
 
 
@@ -451,9 +466,10 @@ global_costmap:
 
         csv_path: "/home/otonom/real_ws/src/middle_lane_cost_layer/config/road_segments_50_points.csv"
 
-        lane_half_width: 1.2
+        lane_half_width: 1.5
+      
 
-        lane_cost: 230
+        lane_cost: 250
 
 
       static_layer:
@@ -465,8 +481,8 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
 
-        cost_scaling_factor: 1.2
-        inflation_radius: 3.0
+        cost_scaling_factor: 1.8
+        inflation_radius: 1.5
 
 
 map_server:
@@ -607,87 +623,61 @@ planner_server:
       downsampling_factor: 1
 
       tolerance: 0.3
-
       allow_unknown: true
 
       max_iterations: -1
-
       max_on_approach_iterations: 2000
-
       max_planning_time: 5.0
 
-      # ==================================================
-      # İLERİ + GERİ ACKERMANN
-      # ==================================================
-      motion_model_for_search: "REEDS_SHEPP"
+      # ==========================================================
+      # SADECE İLERİ ACKERMANN
+      # ==========================================================
 
-      # Araç fiziksel minimum dönüş yarıçapı.
+      motion_model_for_search: "DUBIN"
+
       minimum_turning_radius: 2.5
 
       angle_quantization_bins: 72
-
       allow_primitive_interpolation: true
-
-      # ==========================================
-      # MANEVRA MALİYETLERİ
-      # ==========================================
 
       non_straight_penalty: 1.2
 
-      # Geri gitmeye izin ver fakat gereksiz yere
-      # geri gitmesini biraz cezalandır.
+      # DUBIN'de reverse kullanılmadığı için pratikte önemsiz.
       reverse_penalty: 2.0
 
-      # İleri -> geri veya geri -> ileri
-      # geçişlerinin maliyeti.
-      change_penalty: 0.15
+      change_penalty: 0.0
 
       cost_penalty: 2.0
-
-      retrospective_penalty: 0.15
-
-      # ==========================================
-      # ANALYTIC EXPANSION
-      # ==========================================
+      retrospective_penalty: 0.02
 
       analytic_expansion_ratio: 3.5
-
       analytic_expansion_max_length: 7.5
-
       analytic_expansion_max_cost: 200.0
-
       analytic_expansion_max_cost_override: false
 
       lookup_table_size: 20.0
 
       cache_obstacle_heuristic: true
-
       debug_visualizations: false
 
       use_quadratic_cost_penalty: false
-
       downsample_obstacle_heuristic: true
 
       goal_heading_mode: "DEFAULT"
 
-      # ==========================================
+      # ==========================================================
       # PATH SMOOTHING
-      # ==========================================
+      # ==========================================================
 
-      smooth_path: false
+      smooth_path: true
 
       smoother:
-        max_iterations: 1500
-
-        w_smooth: 0.4
-
+        max_iterations: 500
+        w_smooth: 0.3
         w_data: 0.2
-
         tolerance: 1.0e-10
-
         do_refinement: true
-
-        refinement_num: 3
+        refinement_num: 2
 
 
 smoother_server:

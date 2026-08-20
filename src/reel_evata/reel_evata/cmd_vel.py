@@ -140,7 +140,7 @@ class CmdVelSubscriber(Node):
         # ==================== DONUSTE GUC ARTISI ====================
         self.declare_parameter('curvature_power_boost_enable', True)
         self.declare_parameter('curvature_free_zone', 0.25)
-        self.declare_parameter('turn_power_boost_max', 2.0)
+        self.declare_parameter('turn_power_boost_max', 0.5)
 
         # ==================== KALKIS / STALL ====================
         self.declare_parameter('stall_boost_rate', 1.3)
@@ -336,7 +336,6 @@ class CmdVelSubscriber(Node):
             is_red = "kirmizi" in msg.data
             if is_red and not self.kirmizi:
                 self.get_logger().warn("Kirmizi isik algilandi. Arac durdurulacak.")
-            self.kirmizi = is_red
         except Exception as e:
             self.get_logger().error(f"Levha verisi islenemedi: {e}")
 

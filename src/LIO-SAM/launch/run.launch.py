@@ -27,15 +27,15 @@ def generate_launch_description():
     sensor_qos_overrides = {
         'qos.imu.reliability': 'BEST_EFFORT',
         'qos.imu.history': 'KEEP_LAST',
-        'qos.imu.depth': 200,
+        'qos.imu.depth': 100,
 
         'qos.lidar.reliability': 'BEST_EFFORT',
         'qos.lidar.history': 'KEEP_LAST',
-        'qos.lidar.depth': 2000,
+        'qos.lidar.depth': 5,
 
         'qos.odom.reliability': 'BEST_EFFORT',
         'qos.odom.history': 'KEEP_LAST',
-        'qos.odom.depth': 200,
+        'qos.odom.depth': 50,
     }
 
     return LaunchDescription([
