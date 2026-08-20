@@ -20,9 +20,6 @@ from nav2_msgs.srv import ClearEntireCostmap
 
 # ==============================================================
 # DUVAR NOKTALARINI OLUŞTUR
-#
-# DUVAR MAP FRAME'İNDE OLUŞTURULUR.
-# ROBOT HAREKET ETSE BİLE DUVARIN MAP KOORDİNATI DEĞİŞMEZ.
 # ==============================================================
 
 def generate_wall_points(
@@ -33,8 +30,8 @@ def generate_wall_points(
     width: float,
     z_min: float = 0.0,
     z_max: float = 2.0,
-    xy_res: float = 0.25,
-    z_res: float = 0.25,
+    xy_res: float = 0.7,
+    z_res: float = 0.8,
 ) -> list:
 
     points = []
@@ -100,35 +97,14 @@ class SignDynamicObstacle(Node):
         # Bariyer 20 saniye aktif
         self.wall_duration = 20.0
 
-        # ======================================================
-        # AKTİF BARIYERLER
-        #
-        # wall_key:
-        #
-        # {
-        #     cx,
-        #     cy,
-        #     yaw,
-        #     length,
-        #     marker_id,
-        #     expire_time
-        # }
-        # ======================================================
-
         self.walls = {}
 
         self.next_marker_id = 0
 
-        # ======================================================
         # JSON
-        # ======================================================
-
         self.barriers = self.load_barriers()
 
-        # ======================================================
         # TF
-        # ======================================================
-
         self.tf_buffer = Buffer()
 
         self.tf_listener = TransformListener(
@@ -136,9 +112,7 @@ class SignDynamicObstacle(Node):
             self
         )
 
-        # ======================================================
         # SUBSCRIBER
-        # ======================================================
 
         self.sign_sub = self.create_subscription(
             String,
@@ -147,9 +121,7 @@ class SignDynamicObstacle(Node):
             10
         )
 
-        # ======================================================
         # MARKER
-        # ======================================================
 
         self.marker_pub = self.create_publisher(
             MarkerArray,
@@ -157,9 +129,7 @@ class SignDynamicObstacle(Node):
             10
         )
 
-        # ======================================================
         # LOCAL COSTMAP
-        # ======================================================
 
         self.obstacle_pub = self.create_publisher(
             PointCloud2,
@@ -167,9 +137,7 @@ class SignDynamicObstacle(Node):
             10
         )
 
-        # ======================================================
         # GLOBAL COSTMAP
-        # ======================================================
 
         self.obstacle_global_pub = self.create_publisher(
             PointCloud2,
@@ -191,11 +159,9 @@ class SignDynamicObstacle(Node):
             "/global_costmap/clear_entirely_global_costmap"
         )
 
-        # ======================================================
-        # ANA TIMER
-        #
-        # Hem yayın yapar
-        # Hem süresi dolan bariyerleri siler.
+
+        # Hem yayın yap
+        # Hem süresi dolan bariyerleri sil
         # ======================================================
 
         self.publish_timer = self.create_timer(
@@ -211,19 +177,6 @@ class SignDynamicObstacle(Node):
             "Levha Dinamik Engel Node Baslatildi"
         )
 
-        self.get_logger().info(
-            f"Barrier duration = {self.wall_duration:.1f} saniye"
-        )
-
-        self.get_logger().info(
-            "Bariyer frame = MAP"
-        )
-
-        self.get_logger().info(
-            "=============================================="
-        )
-
-    # ==========================================================
     # JSON
     # ==========================================================
 
@@ -253,7 +206,6 @@ class SignDynamicObstacle(Node):
 
             return []
 
-    # ==========================================================
     # LEVHA CALLBACK
     # ==========================================================
 
@@ -271,7 +223,6 @@ class SignDynamicObstacle(Node):
 
             return
 
-        # ======================================================
         # KAVŞAK
         # ======================================================
 
@@ -280,7 +231,6 @@ class SignDynamicObstacle(Node):
         if junction is None:
             return
 
-        # ======================================================
         # ROBOT YAW
         # ======================================================
 
@@ -289,7 +239,6 @@ class SignDynamicObstacle(Node):
         if robot_yaw_deg is None:
             return
 
-        # ======================================================
         # ANGLE SET
         # ======================================================
 
@@ -316,18 +265,27 @@ class SignDynamicObstacle(Node):
 
         active_barriers = angle_set["barriers"]
 
-        # ======================================================
         # LEVHA -> BARIYER
         # ======================================================
 
         sign_map = {
+
+            "sol": [
+                "front",
+                "right"
+            ],
+
+            "sag": [
+                "front",
+                "left"
+            ],
 
             "ileriden_sola": [
                 "front",
                 "right"
             ],
 
-            "sag": [
+            "ileriden_saga": [
                 "front",
                 "left"
             ],
@@ -339,6 +297,10 @@ class SignDynamicObstacle(Node):
             "sagadonulmez": [
                 "right"
             ],
+
+            "girisiyok": {
+                "front"
+            },
         }
 
         # ======================================================

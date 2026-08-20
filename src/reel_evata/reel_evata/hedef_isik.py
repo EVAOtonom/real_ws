@@ -14,9 +14,6 @@ from action_msgs.msg import GoalStatus
 from std_msgs.msg import String, Int8
 from geometry_msgs.msg import Twist
 
-# ============================================================
-# TF
-# ============================================================
 from tf2_ros import Buffer, TransformListener, TransformException
 
 
@@ -25,35 +22,22 @@ class SequentialNav2(Node):
     def __init__(self):
         super().__init__('sequential_nav2_goals')
 
-        # =========================================================
         # NAV2 ACTION CLIENT
-        # =========================================================
         self.nav_client = ActionClient(
             self,
             NavigateToPose,
             'navigate_to_pose'
         )
 
-        # =========================================================
         # ROTA DOSYASI
-        # =========================================================
         self.route_file = os.path.expanduser(
             "~/real_ws/src/reel_evata/reel_evata/rota.json"
         )
 
         self.goals = self._load_route()
 
-        # =========================================================
-        # TF AYARLARI
-        #
-        # Araç konumu artık /odom veya /amcl_pose'dan ALINMIYOR.
-        #
-        # Direkt:
-        #
-        #       map -> base_footprint
-        #
-        # TF dönüşümünden bulunuyor.
-        # =========================================================
+
+        # TF dönüşümü
 
         self.map_frame = 'map'
         self.robot_frame = 'base_footprint'
@@ -72,30 +56,48 @@ class SequentialNav2(Node):
         # TF hata logunu sürekli basmamak için
         self.last_tf_warning_time = 0.0
 
-        # =========================================================
         # KIRMIZI IŞIK SİSTEMİ
-        # =========================================================
         self.motion_enabled = True
         self.current_goal_handle = None
         self._red_light_timeout_timer = None
         self._cancel_future = None
 
-        # =========================================================
+        #PATH MESAFE KONTROLU
+        self.initial_path_distance = None
+        self.latest_path_distance = None
+
+        self.route_extension_threshold = 10.0
+
+        self.skip_due_to_route_extension = False
+        self.route_extension_cancel_requested = False
+
         # TRAFİK IŞIĞI BÖLGELERİ
-        #
-        # DİKKAT:
-        # Bunlar artık MAP koordinatlarıdır.
-        # =========================================================
-
         self.traffic_light_zones = [
-            {'x_min': -71.6, 'x_max': -63.5, 'y_min': -15.4, 'y_max': -7.26},
-            {'x_min': -29.9, 'x_max': -21.0, 'y_min': 27.7, 'y_max': 35.6},
-            {'x_min': -26.7, 'x_max': -19.2, 'y_min': -0.53, 'y_max': 6.71},        ]
 
+            {
+                'x_min': -32.5,
+                'x_max': -19.2,
+                'y_min': 25.4,
+                'y_max': 37.7
+            },
 
-        # =========================================================
+            {
+                'x_min': -27.0,
+                'x_max': -15.2,
+                'y_min': -4.39,
+                'y_max': 7.25
+            },
+
+            {
+                'x_min': -71.6,
+                'x_max': -62.7,
+                'y_min': -16.4,
+                'y_max': -7.06
+            },
+
+        ]
+
         # PUBLISHERS
-        # =========================================================
 
         self.cmd_vel_pub = self.create_publisher(
             Twist,
@@ -109,12 +111,7 @@ class SequentialNav2(Node):
             10
         )
 
-        # =========================================================
         # SUBSCRIBERS
-        #
-        # /odom ABONELİĞİ ARTIK YOK.
-        # /amcl_pose ABONELİĞİ DE YOK.
-        # =========================================================
 
         self.create_subscription(
             String,
@@ -128,9 +125,7 @@ class SequentialNav2(Node):
             f'{self.map_frame} -> {self.robot_frame}'
         )
 
-    # =============================================================
     # ROTA YÜKLE
-    # =============================================================
 
     def _load_route(self):
         """
@@ -547,9 +542,86 @@ class SequentialNav2(Node):
 
         try:
 
-            distance = (
+            distance = float(
                 feedback.distance_remaining
             )
+
+            self.latest_path_distance = distance
+
+            # İlk alınan rota mesafesini kaydet
+
+            # -------------------------------------------------
+            # İlk GEÇERLİ rota mesafesini kaydet
+            # 0.0 gelirse henüz başlangıç mesafesi kabul etme
+            # -------------------------------------------------
+
+            if self.initial_path_distance is None:
+
+                if distance <= 0.0:
+
+                    self.get_logger().info(
+                        '[ROTA KONTROL] Mesafe 0.0 m geldi. '
+                        'Gerçek rota mesafesi bekleniyor...',
+                        throttle_duration_sec=2.0
+                    )
+
+                    return
+
+                self.initial_path_distance = distance
+
+                self.get_logger().info(
+                    f'[ROTA KONTROL] İlk geçerli planlanan mesafe: '
+                    f'{distance:.2f} m'
+                )
+
+            # Mevcut rota uzamasını hesapla
+
+            route_extension = (
+                distance
+                -
+                self.initial_path_distance
+            )
+
+            self.get_logger().info(
+                f'[ROTA KONTROL] '
+                f'Anlık={distance:.2f} m | ',
+                throttle_duration_sec=5.0
+            )
+
+            # -------------------------------------------------
+            # Rota 10 metre veya daha fazla uzadıysa
+            # -------------------------------------------------
+
+            if (
+                route_extension
+                >=
+                self.route_extension_threshold
+                and
+                not self.route_extension_cancel_requested
+            ):
+
+                self.get_logger().warn(
+                    f'[ROTA UZADI] '
+                    f'Rota {route_extension:.2f} m uzadı!'
+                )
+
+                self.get_logger().warn(
+                    'Aktif hedef ve bir sonraki hedef '
+                    'ATLANACAK.'
+                )
+
+
+                self.skip_due_to_route_extension = True
+
+                self.route_extension_cancel_requested = True
+
+                # Aktif Nav2 hedefini iptal et
+                if self.current_goal_handle is not None:
+
+                    self._cancel_future = (
+                        self.current_goal_handle
+                        .cancel_goal_async()
+                    )
 
             self.get_logger().info(
                 f'Kalan mesafe: '
@@ -557,8 +629,11 @@ class SequentialNav2(Node):
                 throttle_duration_sec=5.0
             )
 
-        except Exception:
-            pass
+        except Exception as e:
+
+            self.get_logger().error(
+                f'Feedback işleme hatası: {e}'
+            )
 
     # =============================================================
     # DURAK BEKLEME
@@ -747,6 +822,16 @@ class SequentialNav2(Node):
 
             self._wait_until_motion_enabled()
 
+            # =====================================================
+            # YENİ HEDEF İÇİN ROTA UZAMA KONTROLÜNÜ SIFIRLA
+            # =====================================================
+
+            self.initial_path_distance = None
+            self.latest_path_distance = None
+
+            self.skip_due_to_route_extension = False
+            self.route_extension_cancel_requested = False
+            
             # -----------------------------------------------------
             # Goal oluştur
             # -----------------------------------------------------
@@ -870,8 +955,59 @@ class SequentialNav2(Node):
                 GoalStatus.STATUS_CANCELED
             ):
 
-                # Kırmızı ışık yüzünden iptal edildiyse
-                # hata sayma.
+                # =====================================================
+                # ROTA UZAMASI NEDENİYLE İPTAL
+                # =====================================================
+
+                if self.skip_due_to_route_extension:
+
+                    self.get_logger().warn(
+                        '================================================'
+                    )
+
+                    self.get_logger().warn(
+                        f'ROTA UZAMASI NEDENİYLE '
+                        f'HEDEF {index + 1} ATLANDI.'
+                    )
+
+                    old_index = index
+
+                    # -------------------------------------------------
+                    # Aktif hedef + bir sonraki hedefi atla
+                    # -------------------------------------------------
+
+                    index += 2
+
+                    if index < len(self.goals):
+
+                        self.get_logger().warn(
+                            f'HEDEF {old_index + 1} ve '
+                            f'HEDEF {old_index + 2} atlandı.'
+                        )
+
+                        self.get_logger().warn(
+                            f'Yeni hedef: '
+                            f'{index + 1}/{len(self.goals)}'
+                        )
+
+                    else:
+
+                        self.get_logger().warn(
+                            'Aktif hedef ve sonraki hedef '
+                            'atlandıktan sonra rota tamamlandı.'
+                        )
+
+                    self.get_logger().warn(
+                        '================================================'
+                    )
+
+                    continue
+
+
+                # =====================================================
+                # KIRMIZI IŞIK NEDENİYLE İPTAL
+                # =====================================================
+
                 if not self.motion_enabled:
 
                     self.get_logger().warn(
@@ -889,9 +1025,12 @@ class SequentialNav2(Node):
                         'aynı hedef tekrar gönderiliyor.'
                     )
 
-                    # index artmıyor.
-                    # Aynı hedef tekrar gönderiliyor.
                     continue
+
+
+                # =====================================================
+                # DİĞER CANCEL
+                # =====================================================
 
                 self.get_logger().error(
                     f'HEDEF '
@@ -901,48 +1040,10 @@ class SequentialNav2(Node):
 
                 return False
 
-            # =====================================================
-            # ABORT
-            # =====================================================
-
-            elif (
-                status
-                ==
-                GoalStatus.STATUS_ABORTED
-            ):
-
-                self.get_logger().error(
-                    f'HEDEF '
-                    f'{index + 1} '
-                    f'ABORTED.'
-                )
-
-                return False
-
-            # =====================================================
-            # DİĞER
-            # =====================================================
-
-            else:
-
-                self.get_logger().error(
-                    f'HEDEF '
-                    f'{index + 1} '
-                    f'başarısız. '
-                    f'Status={status}'
-                )
-
-                return False
-
         # =========================================================
         # TÜM HEDEFLER TAMAMLANDI
         # =========================================================
 
-        self.get_logger().info('')
-
-        self.get_logger().info(
-            '=========================================='
-        )
 
         self.get_logger().info(
             'TÜM NAV2 HEDEFLERİ '
