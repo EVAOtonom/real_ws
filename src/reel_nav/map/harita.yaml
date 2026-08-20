@@ -1,5 +1,5 @@
 free_thresh: 0.25
-image: pist_park_deneme.pgm
+image: harita.pgm
 mode: trinary
 negate: 0
 occupied_thresh: 0.65

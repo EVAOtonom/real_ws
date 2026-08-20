@@ -454,8 +454,8 @@ global_costmap:
           raytrace_min_range: 3.0
           obstacle_min_range: 3.0
 
-          raytrace_max_range: 40.0
-          obstacle_max_range: 40.8
+          raytrace_max_range: 200.0
+          obstacle_max_range: 200.8
 
 
 
