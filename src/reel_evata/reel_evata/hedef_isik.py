@@ -62,14 +62,6 @@ class SequentialNav2(Node):
         self._red_light_timeout_timer = None
         self._cancel_future = None
 
-        #PATH MESAFE KONTROLU
-        self.previous_path_distance = None
-        self.latest_path_distance = None
-
-        self.route_extension_threshold = 60.0
-
-        self.skip_due_to_route_extension = False
-        self.route_extension_cancel_requested = False
 
         # TRAFİK IŞIĞI BÖLGELERİ
         self.traffic_light_zones = [
@@ -542,106 +534,18 @@ class SequentialNav2(Node):
 
         try:
 
-            distance = float(
+            distance = (
                 feedback.distance_remaining
             )
 
-            if distance <= 0.0:
-
-                self.get_logger().info(
-                    '[ROTA KONTROL] '
-                    'Mesafe 0.0 geldi, gerçek path mesafesi '
-                    'bekleniyor...',
-                    throttle_duration_sec=2.0
-                )
-
-                return
-
-            # =================================================
-            # İLK GERÇEK MESAFE
-            # =================================================
-
-            if self.previous_path_distance is None:
-
-                self.previous_path_distance = distance
-                self.latest_path_distance = distance
-
-                self.get_logger().info(
-                    f'[ROTA KONTROL] '
-                    f'İlk gerçek kalan mesafe: '
-                    f'{distance:.2f} m'
-                )
-
-                return
-
-            # =================================================
-            # ÖNCEKİ FEEDBACK -> YENİ FEEDBACK
-            #
-            # Örnek:
-            #
-            # Önceki: 45 m
-            # Yeni:    56 m
-            #
-            # Uzama: +11 m
-            # =================================================
-
-            route_extension = (
-                distance
-                -
-                self.previous_path_distance
-            )
-
             self.get_logger().info(
-                f'[ROTA KONTROL] '
-                f'Önceki={self.previous_path_distance:.2f} m | '
-                f'Anlık={distance:.2f} m | '
-                f'Değişim={route_extension:+.2f} m',
-                throttle_duration_sec=10.0
+                f'Kalan mesafe: '
+                f'{distance:.2f} m',
+                throttle_duration_sec=5.0
             )
 
-            # =================================================
-            # KALAN PATH BİR ANDA 10 METRE VEYA DAHA FAZLA
-            # UZADIYSA
-            # =================================================
-
-            if (
-                route_extension
-                >= self.route_extension_threshold
-                and
-                not self.route_extension_cancel_requested
-            ):
-
-                self.get_logger().warn(
-                    f'[ROTA UZADI] '
-                    f'{self.previous_path_distance:.2f} m -> '
-                    f'{distance:.2f} m | '
-                    f'Uzama: +{route_extension:.2f} m'
-                )
-
-                self.get_logger().warn(
-                    'Aktif hedef ve sonraki hedef '
-                    'ATLANACAK.'
-                )
-
-                self.skip_due_to_route_extension = True
-                self.route_extension_cancel_requested = True
-
-                if self.current_goal_handle is not None:
-
-                    self._cancel_future = (
-                        self.current_goal_handle
-                        .cancel_goal_async()
-                    )
-
-            # Bir sonraki feedback için güncelle
-            self.previous_path_distance = distance
-            self.latest_path_distance = distance
-
-        except Exception as e:
-
-            self.get_logger().error(
-                f'Feedback işleme hatası: {e}'
-            )
+        except Exception:
+            pass
 
     # =============================================================
     # DURAK BEKLEME
@@ -830,15 +734,6 @@ class SequentialNav2(Node):
 
             self._wait_until_motion_enabled()
 
-            # =====================================================
-            # YENİ HEDEF İÇİN ROTA UZAMA KONTROLÜNÜ SIFIRLA
-            # =====================================================
-
-            self.previous_path_distance = None
-            self.latest_path_distance = None
-
-            self.skip_due_to_route_extension = False
-            self.route_extension_cancel_requested = False
             
             # -----------------------------------------------------
             # Goal oluştur
@@ -962,54 +857,6 @@ class SequentialNav2(Node):
                 ==
                 GoalStatus.STATUS_CANCELED
             ):
-
-                # =====================================================
-                # ROTA UZAMASI NEDENİYLE İPTAL
-                # =====================================================
-
-                if self.skip_due_to_route_extension:
-
-                    self.get_logger().warn(
-                        '================================================'
-                    )
-
-                    self.get_logger().warn(
-                        f'ROTA UZAMASI NEDENİYLE '
-                        f'HEDEF {index + 1} ATLANDI.'
-                    )
-
-                    old_index = index
-
-                    # -------------------------------------------------
-                    # Aktif hedef + bir sonraki hedefi atla
-                    # -------------------------------------------------
-
-                    index += 2
-
-                    if index < len(self.goals):
-
-                        self.get_logger().warn(
-                            f'HEDEF {old_index + 1} ve '
-                            f'HEDEF {old_index + 2} atlandı.'
-                        )
-
-                        self.get_logger().warn(
-                            f'Yeni hedef: '
-                            f'{index + 1}/{len(self.goals)}'
-                        )
-
-                    else:
-
-                        self.get_logger().warn(
-                            'Aktif hedef ve sonraki hedef '
-                            'atlandıktan sonra rota tamamlandı.'
-                        )
-
-                    self.get_logger().warn(
-                        '================================================'
-                    )
-
-                    continue
 
 
                 # =====================================================
