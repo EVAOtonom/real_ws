@@ -93,11 +93,25 @@ class SignDynamicObstacle(Node):
         self.wall_edge_margin = 0.5
 
         # Bariyer 20 saniye aktif
-        self.wall_duration = 30.0
+        self.wall_duration = 20.0
 
         self.walls = {}
 
         self.next_marker_id = 0
+
+        # KAVŞAK DUVAR KONTROLÜ
+
+        self.auto_left_rules = {
+            (10, "set_2"),
+            (17, "set_2"),
+            (11, "set_1"),
+            (20, "set_1"),
+        }
+
+        self.auto_left_timer = self.create_timer(
+            0.2,
+            self.check_auto_left_walls
+        )
 
         # JSON
         self.barriers = self.load_barriers()
@@ -166,6 +180,11 @@ class SignDynamicObstacle(Node):
             0.2,
             self.update_walls
         )
+
+        self.get_logger().info(
+            "=============================================="
+        )
+
         self.get_logger().info(
             "Levha Dinamik Engel Node Baslatildi"
         )
@@ -294,19 +313,6 @@ class SignDynamicObstacle(Node):
                 ],
                 "trigger_distance": 10.0
             },
-            "ilerisol": {
-                "barriers": [
-                    "right"
-                ],
-                "trigger_distance": 10.0
-            },
-
-            "ilerisag": {
-                "barriers": [
-                    "left"
-                ],
-                "trigger_distance": 10.0
-            },
 
             "soladonulmez": {
                 "barriers": [
@@ -327,12 +333,6 @@ class SignDynamicObstacle(Node):
                     "front"
                 ],
                 "trigger_distance": 16.0
-            },
-            "kavsak": {
-                "barriers": [
-                    "left"
-                ],
-                "trigger_distance": 9.0
             },
         }
 
@@ -588,6 +588,99 @@ class SignDynamicObstacle(Node):
                     return angle_set
 
         return None
+        
+
+    # ==========================================================
+    # KAVŞAKTA LABEL BEKLEMEDEN LEFT DUVAR ÖR
+    # ==========================================================
+
+    def check_auto_left_walls(self):
+
+        junction = self.find_current_junction()
+
+        if junction is None:
+            return
+
+
+        robot_yaw_deg = self.get_robot_map_yaw_deg()
+
+        if robot_yaw_deg is None:
+            return
+
+        # ------------------------------------------------------
+        # Mevcut yön için angle set seç
+        # ------------------------------------------------------
+
+        angle_set = self.find_angle_set(
+            junction,
+            robot_yaw_deg
+        )
+
+        if angle_set is None:
+            return
+
+        junction_id = junction["id"]
+        set_name = angle_set["name"]
+
+        # ------------------------------------------------------
+        # Bu junction + set otomatik left listesinde mi?
+        # ------------------------------------------------------
+
+        if (junction_id, set_name) not in self.auto_left_rules:
+            return
+
+        # ------------------------------------------------------
+        # Left bariyer anahtarı
+        # ------------------------------------------------------
+
+        wall_key = (
+            f"{junction_id}_"
+            f"{set_name}_"
+            f"left"
+        )
+
+        # Zaten oluşturulduysa tekrar oluşturma
+        if wall_key in self.walls:
+            return
+
+        # ------------------------------------------------------
+        # Left bariyeri bul
+        # ------------------------------------------------------
+
+        barrier = angle_set.get(
+            "barriers",
+            {}
+        ).get(
+            "left"
+        )
+
+        if barrier is None:
+
+            self.get_logger().warn(
+                f"[AUTO LEFT ERROR] "
+                f"Junction={junction_id} | "
+                f"Set={set_name} | "
+                f"LEFT bariyeri bulunamadi."
+            )
+
+            return
+
+        # ------------------------------------------------------
+        # LABEL BEKLEMEDEN DUVAR OLUŞTUR
+        # ------------------------------------------------------
+
+        self.get_logger().warn(
+            f"[AUTO LEFT WALL] "
+            f"Junction={junction_id} | "
+            f"Set={set_name} | "
+            f"Yaw={robot_yaw_deg:.2f} | "
+            f"Label beklenmeden LEFT duvar olusturuluyor."
+        )
+
+        self.create_wall(
+            wall_key,
+            barrier
+        )        
 
     # ==========================================================
     # DUVAR OLUŞTUR
