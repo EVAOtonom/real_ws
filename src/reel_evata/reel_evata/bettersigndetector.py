@@ -3,13 +3,11 @@
 import os
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2
 from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import String, ColorRGBA
 from nav_msgs.msg import OccupancyGrid
-from nav2_msgs.action import NavigateToPose
 from tf2_ros import Buffer, TransformListener
 from tf2_geometry_msgs import do_transform_pose
 from cv_bridge import CvBridge
@@ -48,10 +46,6 @@ class SignDetectorWithNavigation(Node):
         self.trackers = {}
         self.max_missed_detections = 5  # bu kadar YOLO turunda tespit edilmezse takip bırakılır
         
-        # Park levhası kontrol değişkenleri
-        self.navigation_sent = False
-        self.last_parking_coordinates = None
-        
         # Map and navigation related
         self.parking_locations = {}  # Store detected parking sign locations
         self.map_data = None
@@ -70,16 +64,10 @@ class SignDetectorWithNavigation(Node):
         
         # Publishers
         self.sign_publisher = self.create_publisher(String, "/detected_signs", 10)
+        # PARK/PARK-YASAK için map koordinatlı detay; park manager bunu kullanır.
+        self.parking_detail_publisher = self.create_publisher(String, "/detected_parking_sign", 10)
         
-        # Navigation action client
-        self.navigate_action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        
-        # Navigation related variables
-        self.parking_navigation_queue = []  # Queue of parking locations to visit
-        self.current_parking_index = 0
-        self.auto_navigate = False  # Flag to enable automatic navigation to all parking spots
-        
-        self.get_logger().info("Sign Detector with Navigation initialized")
+        self.get_logger().info("Sign Detector publish-only initialized (/detected_signs + /detected_parking_sign)")
 
     def point_cloud_callback(self, msg):
         self.latest_pointcloud = msg
@@ -191,78 +179,57 @@ class SignDetectorWithNavigation(Node):
             transform = self.tf_buffer.lookup_transform('map', source_frame, rclpy.time.Time())
             transformed_pose = do_transform_pose(pose_stamped.pose, transform)
             
-            return transformed_pose.position.x - 3.0, transformed_pose.position.y, transformed_pose.position.z
+            return transformed_pose.position.x, transformed_pose.position.y, transformed_pose.position.z
         
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
             self.get_logger().warn(f"Transform failed: {e}")
             return None, None, None
 
-    def navigate_to_parking_sign(self, map_x, map_y):
-        """Navigate to parking sign location using the same format as your example"""
-        # Create goal dictionary in the same format as your example
-        goal = {
-            'x': map_x ,  # Stop 1m before the parking sign
-            'y': map_y,
-            'z': 0.0,
-            'ox': 0.0,
-            'oy': 0.0,
-            'oz': 0.0,
-            'ow': 1.0  # Facing forward
-        }
-        
-        self.get_logger().info(f"Navigating to parking sign at: ({map_x:.2f}, {map_y:.2f})")
-        self.send_goal(goal)
+    @staticmethod
+    def normalize_sign_class_name(class_name):
+        name = str(class_name).strip().lower()
+        translations = str.maketrans({
+            'ı': 'i', 'ş': 's', 'ğ': 'g', 'ü': 'u', 'ö': 'o', 'ç': 'c',
+        })
+        name = name.translate(translations)
+        name = name.replace('_', ' ').replace('-', ' ')
+        return ' '.join(name.split())
 
-    def send_goal(self, goal):
-        """Send navigation goal using the same pattern as your example"""
-        goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header.frame_id = 'map'
-        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
-        goal_msg.pose.pose.position.x = goal['x']
-        goal_msg.pose.pose.position.y = goal['y']
-        goal_msg.pose.pose.position.z = goal['z']
-        goal_msg.pose.pose.orientation.x = goal['ox']
-        goal_msg.pose.pose.orientation.y = goal['oy']
-        goal_msg.pose.pose.orientation.z = goal['oz']
-        goal_msg.pose.pose.orientation.w = goal['ow']
-
-        self.navigate_action_client.wait_for_server()
-        self._send_goal_future = self.navigate_action_client.send_goal_async(
-            goal_msg,
-            feedback_callback=self.feedback_callback
+    def is_no_parking_class(self, class_name):
+        name = self.normalize_sign_class_name(class_name)
+        return (
+            name in {'park yasak', 'park yasagi', 'park etmek yasak', 'no parking', 'noparking'}
+            or ('park' in name and 'yasak' in name)
+            or ('no parking' in name)
         )
-        self._send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def feedback_callback(self, feedback_msg):
-        """Handle navigation feedback"""
-        pass
-
-    def goal_response_callback(self, future):
-        """Handle goal response using the same pattern as your example"""
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().info('Navigation goal rejected :(')
+    def publish_parking_detail(self, class_name, distance, confidence, camera_x, camera_y, camera_z):
+        if camera_x is None:
             return
 
-        self.get_logger().info('Navigation goal accepted.')
-        
-        self._get_result_future = goal_handle.get_result_async()
-        self._get_result_future.add_done_callback(self.get_result_callback)
+        source_frame = 'camera_link'
+        if self.latest_pointcloud is not None and self.latest_pointcloud.header.frame_id:
+            source_frame = self.latest_pointcloud.header.frame_id
 
-    def get_result_callback(self, future):
-        """Handle navigation result and shutdown after completion"""
-        result = future.result()
-        self.get_logger().info('Navigation to parking sign completed! Shutting down...')
-        
-        # Kodu kapat
-        cv2.destroyAllWindows()
-        rclpy.shutdown()
+        map_x, map_y, map_z = self.transform_to_map_frame(
+            camera_x, camera_y, camera_z, source_frame=source_frame
+        )
+        if map_x is None:
+            return
+
+        payload = {
+            'class_name': class_name,
+            'distance': round(float(distance), 3),
+            'confidence': round(float(confidence), 4),
+            'map_x': float(map_x),
+            'map_y': float(map_y),
+            'map_z': float(map_z),
+        }
+        out = String()
+        out.data = json.dumps(payload)
+        self.parking_detail_publisher.publish(out)
 
     def color_image_callback(self, msg):
-        # Eğer hedef konum zaten gönderilmişse, işlemeyi durdur
-        if self.navigation_sent:
-            return
-
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
             cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
@@ -282,8 +249,6 @@ class SignDetectorWithNavigation(Node):
                 self._sync_trackers_with_detections(resized_image, scale_x, scale_y)
 
             sign_data = {}
-            parking_sign_detected = False
-
             for class_name, info in self.trackers.items():
                 x1, y1, x2, y2 = info['bbox']
                 confidence = info['confidence']
@@ -303,14 +268,19 @@ class SignDetectorWithNavigation(Node):
                 self._draw_box(x1, y1, x2, y2, class_name, distance, confidence)
                 sign_data[class_name] = round(distance, 2)
 
-                # Park levhası tespit edildi mi kontrol et
-                if "park" in class_name.lower() or "durak" in class_name.lower():
-                    parking_sign_detected = True
-
-                    if camera_x is not None:
-                        map_x, map_y, map_z = self.transform_to_map_frame(camera_x, camera_y, camera_z)
-                        if map_x is not None:
-                            self.last_parking_coordinates = (map_x, map_y)
+                # PARK kararını bu node VERMEZ. Sadece park manager'a detay yayınlar.
+                normalized_name = self.normalize_sign_class_name(class_name)
+                is_no_parking = self.is_no_parking_class(class_name)
+                is_parking = ("park" in normalized_name) and not is_no_parking
+                if is_parking or is_no_parking:
+                    self.publish_parking_detail(
+                        class_name,
+                        distance,
+                        confidence,
+                        camera_x,
+                        camera_y,
+                        camera_z,
+                    )
 
                 if class_name.lower() == "kirmizi":
                     if distance <= 7.0:
@@ -326,15 +296,6 @@ class SignDetectorWithNavigation(Node):
                     msg.data = json.dumps(publish_data)
                     self.sign_publisher.publish(msg)
                     self.get_logger().info(f"Published: {msg.data}")
-
-            # Park levhası tespit kontrolü (sayaç yok, ilk geçerli tespitte navigasyon gönderilir)
-            if parking_sign_detected and not self.navigation_sent:
-                if self.last_parking_coordinates is not None:
-                    self.get_logger().info("Parking sign detected! Sending navigation goal...")
-                    self.navigate_to_parking_sign(self.last_parking_coordinates[0], self.last_parking_coordinates[1])
-                    self.navigation_sent = True
-                else:
-                    self.get_logger().warn("No valid parking coordinates available for navigation")
 
             if sign_data:
                 msg = String()

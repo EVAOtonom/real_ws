@@ -110,7 +110,7 @@ def generate_launch_description():
         default=os.path.join(
             package_src_dir,
             'map',
-            'harita.yaml'
+            'nokta.yaml'
         )
     )
 
@@ -135,7 +135,7 @@ def generate_launch_description():
             default_value=os.path.join(
                 package_src_dir,
                 'map',
-                'harita.yaml'
+                'nokta.yaml'
             ),
             description='Full path to map file to load'
         ),
@@ -156,29 +156,29 @@ def generate_launch_description():
         # SABİT DÖNÜŞLER
         # ============================================================
 
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_tf_map_to_odom',
-            output='log',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'map', 'odom'
-            ]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='static_tf_map_to_odom',
+        #     output='log',
+        #     arguments=[
+        #         '0', '0', '0',
+        #         '0', '0', '0',
+        #         'map', 'odom'
+        #     ]
+        # ),
 
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_tf_odom_to_base',
-            output='log',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'odom', 'base_footprint'
-            ]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='static_tf_odom_to_base',
+        #     output='log',
+        #     arguments=[
+        #         '0', '0', '0',
+        #         '0', '0', '0',
+        #         'odom', 'base_footprint'
+        #     ]
+        # ),
 
         # ============================================================
         # JOINT STATE PUBLISHER
@@ -417,6 +417,20 @@ pin_proc 'nav2_waypoint_follower/waypoint_follower' '7,23'
                 }
             ]
         ),
+
+
+        Node(
+            package='reel_nav',
+            executable='initialpose',
+            name='poz',
+            output='screen',
+            prefix=['taskset -c 7,23'],
+            parameters=[
+                {
+                    'use_sim_time': use_sim_time
+                }
+            ]
+        ),        
 
         # ============================================================
         # ZED NODE

@@ -5,41 +5,47 @@ from launch.actions import ExecuteProcess, TimerAction
 def generate_launch_description():
 
     # ============================================================
-    # CPU DAĞILIMI
+    # CPU STRATEJISI
     # ============================================================
     #
-    # Mevcut navReel.launch.py:
+    # navReel.launch.py zaten kendi icinde:
     #
-    #   CPU 0-1   -> OS / DDS / genel sistem
-    #   CPU 2-15  -> Nav2 + EKF + pointcloud_to_laserscan + RViz
+    #   CPU 2-15 -> Nav2 / EKF / pointcloud_to_laserscan / RViz
     #
-    # Bu start launch'ta geri kalan CPU'ları diğer ağır sistemlere
-    # ayırıyoruz.
+    # kullaniyor.
     #
-    #   CPU 16-21 -> LIO-SAM
-    #   CPU 22-25 -> LiDAR Localization
-    #   CPU 26-29 -> ZED2i
-    #   CPU 30    -> AKS + MicroStrain
-    #   CPU 31    -> RSLIDAR
+    # Bu nedenle agir perception / localization proseslerini:
     #
-    # LIO-SAM config:
-    #   numberOfCores: 6
+    #   fiziksel core 8-15 + SMT kardesleri
+    #   CPU 8,24,9,25,...,15,31
     #
-    # olduğundan ona tam 6 logical CPU bırakıyoruz.
+    # GENIS ortak havuzuna birakiyoruz.
     #
-    # lidar_localization kendi numberOfCores parametresini kullanmaya
-    # devam eder; taskset sadece hangi CPU havuzunda çalışabileceğini
-    # sınırlar.
+    # Neden tek tek bolmuyoruz?
     #
-    # NAV2 burada taskset ALMIYOR.
-    # navReel.launch.py kendi iç CPU dağılımını yapıyor.
+    #   RSLIDAR'i tek CPU'ya kilitlemek packet decode / cloud publish
+    #   darboğazi olusturabilir.
+    #
+    #   LIO-SAM her an tum CPU'larini kullanmaz. O bosken ZED veya
+    #   lidar_localization ayni havuzdaki bos CPU'lari kullanabilir.
+    #
+    #   Linux scheduler 16 logical CPU icinde dinamik dagitim yapar.
+    #
+    # Nav2'nin kritik CPU'larina perception prosesleri giremez.
+    #
+    # Fiziksel core 0 (CPU 0,16) OS / DDS icin bos.
+    # Fiziksel core 1 (CPU 1,17) AKS + MicroStrain icin.
     # ============================================================
 
-    CPU_LIO_SAM = "16-21"
-    CPU_LIDAR_LOCALIZATION = "22-25"
-    CPU_ZED = "26-29"
-    CPU_AKS_IMU = "30"
-    CPU_RSLIDAR = "31"
+    # Fiziksel CORE 8-15 ve SMT kardesleri:
+    # core8  -> CPU 8,24
+    # core9  -> CPU 9,25
+    # ...
+    # core15 -> CPU 15,31
+    CPU_HEAVY_POOL = "8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31"
+
+    # Fiziksel CORE 1 yalnız AKS + MicroStrain icin.
+    CPU_CONTROL_IO = "1,17"
 
 
     # ============================================================
@@ -47,7 +53,6 @@ def generate_launch_description():
     # ============================================================
 
     def gnome_tab(title, command, cpus=None):
-
         if cpus is not None:
             command = f'taskset -c {cpus} {command}'
 
@@ -67,95 +72,88 @@ def generate_launch_description():
 
 
     # ============================================================
-    # 1. AKS
+    # AKS
+    # ============================================================
+    #
+    # AKS'i yapay olarak tek CPU'ya sikistirmiyoruz.
+    # Kontrol / seri haberlesme callback'leri Linux scheduler tarafindan
+    # uygun CPU'da calisabilsin.
     # ============================================================
 
     aks = gnome_tab(
         'AKS',
         'ros2 run reel_evata Aks',
-        CPU_AKS_IMU
+        CPU_CONTROL_IO
     )
 
 
     # ============================================================
-    # 2. MICROSTRAIN IMU
+    # MICROSTRAIN IMU
     # ============================================================
 
     microstrain = gnome_tab(
         'MICROSTRAIN IMU',
         'ros2 launch microstrain_inertial_driver microstrain_launch.py',
-        CPU_AKS_IMU
+        CPU_CONTROL_IO
     )
 
 
     # ============================================================
-    # 3. RSLIDAR
+    # RSLIDAR
+    # ============================================================
+    #
+    # ONEMLI:
+    # Eskiden tek logical CPU verilmesi driver'i bogabiliyordu.
+    # Artik 16 logical CPU'luk havuzda serbest.
     # ============================================================
 
     rslidar = gnome_tab(
         'RSLIDAR',
         'ros2 launch rslidar_sdk start.py',
-        CPU_RSLIDAR
+        CPU_HEAVY_POOL
     )
 
 
     # ============================================================
-    # 4. ZED2i
+    # ZED2i
     # ============================================================
 
     zed = gnome_tab(
         'ZED2i',
         'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i',
-        CPU_ZED
+        CPU_HEAVY_POOL
     )
 
 
     # ============================================================
-    # 5. LIO-SAM
+    # LIO-SAM
     # ============================================================
 
     lio = gnome_tab(
         'LIO_SAM',
-
-        # Eğer localization-only launch dosyasını kullanıyorsan:
-        'ros2 launch lio_sam run.launch.py',
-
-        # Eski run.launch.py kullanacaksan üstteki satırı:
-        # 'ros2 launch lio_sam run.launch.py'
-        #
-        # olarak değiştir.
-
-        CPU_LIO_SAM
+        'ros2 launch lio_sam run.launch.py '
+        'params_file:=/home/otonom/real_ws/src/LIO-SAM/config/params.yaml',
+        CPU_HEAVY_POOL
     )
 
 
     # ============================================================
-    # 6. LIDAR LOCALIZATION
+    # LIDAR LOCALIZATION
     # ============================================================
 
     lidar_localization = gnome_tab(
         'LIDAR LOCALIZATION',
         'ros2 launch lidar_localization_ros2 lidar_localization.launch.py',
-        CPU_LIDAR_LOCALIZATION
+        CPU_HEAVY_POOL
     )
 
 
     # ============================================================
-    # 7. NAV2
+    # NAV2
     # ============================================================
     #
-    # BURADA taskset YOK.
-    #
-    # navReel.launch.py zaten kendi içinde:
-    #
-    # controller_server
-    # planner_server
-    # velocity_smoother
-    # EKF
-    # pointcloud_to_laserscan
-    # RViz
-    #
-    # gibi node'ları CPU'lara dağıtıyor.
+    # Burada ekstra taskset YOK.
+    # navReel.launch.py kendi process-level affinity ayarlarini kullaniyor.
     # ============================================================
 
     nav = gnome_tab(
@@ -165,99 +163,48 @@ def generate_launch_description():
 
 
     # ============================================================
-    # BAŞLATMA SIRASI
+    # BASLATMA SIRASI
     # ============================================================
     #
-    # Eski:
-    #
-    # 0.0
-    # 0.1
-    # 0.2
-    # 0.3
-    # ...
-    #
-    # şeklinde neredeyse hepsini aynı anda başlatıyordu.
-    #
-    # ZED + LIO-SAM + Nav2 aynı anda initialize olduğunda
-    # anlık CPU / RAM / DDS yükü çok artabilir.
-    #
-    # Bu nedenle sensör -> odometri -> localization -> Nav2
-    # sırasıyla başlatıyoruz.
+    # Aynı anda initialization patlamasi yaratmamak icin sensörlerden
+    # navigasyona dogru kademeli baslatiliyor.
     # ============================================================
 
     return LaunchDescription([
-
-        # --------------------------------------------------------
-        # AKS
-        # --------------------------------------------------------
 
         TimerAction(
             period=0.0,
             actions=[aks]
         ),
 
-
-        # --------------------------------------------------------
-        # MICROSTRAIN
-        # --------------------------------------------------------
-
         TimerAction(
             period=1.0,
             actions=[microstrain]
         ),
-
-
-        # --------------------------------------------------------
-        # RSLIDAR
-        # --------------------------------------------------------
 
         TimerAction(
             period=2.0,
             actions=[rslidar]
         ),
 
-
-        # --------------------------------------------------------
-        # ZED
-        # --------------------------------------------------------
-
         TimerAction(
             period=4.0,
             actions=[zed]
         ),
 
-
-        # --------------------------------------------------------
-        # LIO-SAM
-        #
-        # LiDAR + IMU'nun önce ayağa kalkmasını bekliyoruz.
-        # --------------------------------------------------------
-
+        # IMU + LiDAR stabil veri üretmeye baslasin.
         TimerAction(
             period=7.0,
             actions=[lio]
         ),
 
-
-        # --------------------------------------------------------
-        # LIDAR LOCALIZATION
-        #
-        # LIO-SAM odometrisinin oluşmasına zaman veriyoruz.
-        # --------------------------------------------------------
-
+        # LIO odometri / correction zincirine zaman ver.
         TimerAction(
             period=10.0,
             actions=[lidar_localization]
         ),
 
-
-        # --------------------------------------------------------
-        # NAV2
-        #
-        # Sensor + odometry + localization zinciri hazırlandıktan
-        # sonra navigation başlıyor.
-        # --------------------------------------------------------
-
+        # Localization sistemi oturduktan sonra Nav2.
         TimerAction(
             period=13.0,
             actions=[nav]

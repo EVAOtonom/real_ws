@@ -14,7 +14,7 @@ amcl:
     base_frame_id: "base_footprint"
     global_frame_id: "map"
     odom_frame_id: "odom"
-    tf_broadcast: true
+    tf_broadcast: false
     transform_tolerance: 0.5
 
     ### Lazer modeli ###
@@ -136,7 +136,7 @@ bt_navigator_navigate_to_pose_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: False
-    controller_frequency: 20.0
+    controller_frequency: 30.0
 
     controller_plugins: ["FollowPath", "ParkFollowPath"]
 
@@ -159,7 +159,7 @@ controller_server:
       xy_goal_tolerance: 1.0
 
       # 0.7 rad ≈ 40 derece
-      yaw_goal_tolerance: 0.7
+      yaw_goal_tolerance: 1.0
 
       stateful: True
 
@@ -173,13 +173,14 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      desired_linear_vel: 0.8
+      desired_linear_vel: 1.0
+
 
       # Normal navigasyonda geri sürüş kapalı.
       allow_reversing: false
 
-      min_approach_linear_velocity: 0.1
-      approach_velocity_scaling_dist: 10.0
+      min_approach_linear_velocity: 0.5
+      approach_velocity_scaling_dist: 3.0
 
       max_allowed_time_to_collision_up_to_carrot: 8.0
       use_collision_detection: true
@@ -218,15 +219,15 @@ controller_server:
 
       use_regulated_linear_velocity_scaling: true
 
-      regulated_linear_scaling_min_radius: 2.7
+      regulated_linear_scaling_min_radius: 7.0
 
       regulated_linear_scaling_min_speed: 0.4
 
       use_cost_regulated_linear_velocity_scaling: true
 
-      cost_scaling_dist: 5.0
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 1.2
+      cost_scaling_dist: 2.0
+      cost_scaling_gain: 1.5
+      inflation_cost_scaling_factor: 2.5
 
       transform_tolerance: 0.5
 
@@ -242,7 +243,7 @@ controller_server:
       # HIZ
       # ==========================================================
 
-      desired_linear_vel: 0.35
+      desired_linear_vel: 0.50
 
       # PARKTA ASLA GERİ GİTME
       allow_reversing: false
@@ -334,7 +335,7 @@ local_costmap:
       # 7 m max lookahead icin robot merkezden 8 m sinira sahip olmaya devam ediyor.
       width: 27
       height: 27
-      resolution: 0.15
+      resolution: 0.05
 
       footprint: "[[1.35, 0.775], [1.35, -0.775], [-1.35, -0.775], [-1.35, 0.775]]"
 
@@ -344,7 +345,7 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
 
         cost_scaling_factor: 1.2
-        inflation_radius: 3.0
+        inflation_radius: 2.0
 
         always_send_full_costmap: False
 
@@ -380,7 +381,7 @@ local_costmap:
           inf_is_valid: true
 
           # Gerçek LaserScan sürekli geldiği için eski lidar ölçümünü tutma.
-          observation_persistence: 0.0
+          observation_persistence: 3.0
 
 
 
@@ -406,7 +407,7 @@ global_costmap:
 
       track_unknown_space: true
 
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer", "middle_lane_cost_layer"]
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer", "rear_keepout_layer"]
 
 
       obstacle_layer:
@@ -427,7 +428,7 @@ global_costmap:
           data_type: "LaserScan"
 
           # pointcloud_to_laserscan range_max ile aynı clearing menzili.
-          raytrace_max_range: 12.0
+          raytrace_max_range: 13.0
           raytrace_min_range: 0.50
 
           # Son 0.5 m yalnız clearing payı olarak bırakılıyor.
@@ -469,7 +470,7 @@ global_costmap:
         lane_half_width: 1.5
       
 
-        lane_cost: 250
+        lane_cost: 200
 
 
       static_layer:
@@ -478,11 +479,30 @@ global_costmap:
         map_subscribe_transient_local: True
 
 
+      rear_keepout_layer:
+        plugin: "rear_keepout_layer::RearKeepoutLayer"
+
+        enabled: true
+
+        road_width: 10.0
+        vehicle_rear_x: -1.35
+
+        rear_gap: 0.80
+        rear_bar_thickness: 0.40
+
+        # Yan duvarları olabildiğince ince tut
+        side_arm_thickness: 0.10
+
+        # Yan duvar aracın önüne UZAMASIN
+        arm_front_x: 0.0
+
+        bounds_padding: 0.20
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
 
         cost_scaling_factor: 1.8
-        inflation_radius: 1.5
+        inflation_radius: 1.8
 
 
 map_server:
@@ -524,8 +544,8 @@ planner_server:
 
       # Global costmap 5 cm kalir; normal Hybrid-A* aramasi 10 cm gridde yapilir.
       # Yaklasik 4x daha az XY arama hucresi.
-      downsample_costmap: true
-      downsampling_factor: 2
+      downsample_costmap: false
+      downsampling_factor: 1
 
       tolerance: 0.5
 
@@ -535,7 +555,7 @@ planner_server:
 
       max_on_approach_iterations: 1000
 
-      max_planning_time: 2.0
+      max_planning_time: 30.0
 
       # ==================================================
       # SADECE İLERİ
@@ -561,11 +581,11 @@ planner_server:
       # DUBIN zaten reverse kullanmaz.
       reverse_penalty: 2.0
 
-      change_penalty: 0.50
+      change_penalty: 0.0
 
       cost_penalty: 2.0
 
-      retrospective_penalty: 0.02
+      retrospective_penalty: 0.15
 
       # ==========================================
       # ANALYTIC EXPANSION
@@ -581,7 +601,7 @@ planner_server:
 
       lookup_table_size: 20.0
 
-      cache_obstacle_heuristic: true
+      cache_obstacle_heuristic: false
 
       debug_visualizations: false
 
@@ -866,14 +886,14 @@ velocity_smoother:
     # olduğu için park.py sırasında geri sürüş mümkün.
     # =====================================================
 
-    max_velocity: [0.8, 0.0, 0.40]
+    max_velocity: [1.2, 0.0, 0.40]
 
     # Maksimum geri park hızı = 0.20 m/s
     min_velocity: [-0.2, 0.0, -0.40]
 
-    max_accel: [0.5, 0.0, 1.0]
+    max_accel: [0.30, 0.0, 1.0]
 
-    max_decel: [-0.5, 0.0, -1.0]
+    max_decel: [-0.75, 0.0, -1.0]
 
     odom_topic: "odom"
 

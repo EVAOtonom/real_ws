@@ -393,10 +393,25 @@ public:
             if (imuTime < currentCorrectionTime - delta_t)
             {
                 double dt = (lastImuT_opt < 0) ? (1.0 / 500.0) : (imuTime - lastImuT_opt);
+
+                // GTSAM requires strictly positive integration time.
+                // Drop duplicate / out-of-order IMU samples instead of aborting LIO-SAM.
+                if (lastImuT_opt >= 0 && dt <= 0.0)
+                {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "Skipping non-monotonic IMU sample in optimization queue: "
+                        "imuTime=%.9f lastImuT_opt=%.9f dt=%.9f",
+                        imuTime, lastImuT_opt, dt);
+
+                    imuQueOpt.pop_front();
+                    continue;
+                }
+
                 imuIntegratorOpt_->integrateMeasurement(
                         gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
-                
+
                 lastImuT_opt = imuTime;
                 imuQueOpt.pop_front();
             }
@@ -460,10 +475,23 @@ public:
             {
                 sensor_msgs::msg::Imu *thisImu = &imuQueImu[i];
                 double imuTime = stamp2Sec(thisImu->header.stamp);
-                double dt = (lastImuQT < 0) ? (1.0 / 500.0) :(imuTime - lastImuQT);
+                double dt = (lastImuQT < 0) ? (1.0 / 500.0) : (imuTime - lastImuQT);
 
-                imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
-                                                        gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
+                // Protect re-propagation from duplicate / out-of-order IMU stamps.
+                // Keep lastImuQT at the previous valid sample when rejecting one.
+                if (lastImuQT >= 0 && dt <= 0.0)
+                {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "Skipping non-monotonic IMU sample during re-propagation: "
+                        "imuTime=%.9f lastImuQT=%.9f dt=%.9f",
+                        imuTime, lastImuQT, dt);
+                    continue;
+                }
+
+                imuIntegratorImu_->integrateMeasurement(
+                        gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
+                        gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
                 lastImuQT = imuTime;
             }
         }
@@ -506,11 +534,25 @@ public:
 
         double imuTime = stamp2Sec(thisImu.header.stamp);
         double dt = (lastImuT_imu < 0) ? (1.0 / 500.0) : (imuTime - lastImuT_imu);
+
+        // GTSAM throws if dt <= 0. Skip only the bad live IMU sample.
+        // Do not move lastImuT_imu backwards when rejecting a sample.
+        if (lastImuT_imu >= 0 && dt <= 0.0)
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Skipping non-monotonic live IMU sample: "
+                "imuTime=%.9f lastImuT_imu=%.9f dt=%.9f",
+                imuTime, lastImuT_imu, dt);
+            return;
+        }
+
         lastImuT_imu = imuTime;
 
         // integrate this single imu message
-        imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu.linear_acceleration.x, thisImu.linear_acceleration.y, thisImu.linear_acceleration.z),
-                                                gtsam::Vector3(thisImu.angular_velocity.x,    thisImu.angular_velocity.y,    thisImu.angular_velocity.z), dt);
+        imuIntegratorImu_->integrateMeasurement(
+                gtsam::Vector3(thisImu.linear_acceleration.x, thisImu.linear_acceleration.y, thisImu.linear_acceleration.z),
+                gtsam::Vector3(thisImu.angular_velocity.x,    thisImu.angular_velocity.y,    thisImu.angular_velocity.z), dt);
 
         // predict odometry
         gtsam::NavState currentState = imuIntegratorImu_->predict(prevStateOdom, prevBiasOdom);

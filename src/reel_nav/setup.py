@@ -26,7 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'usb_settings = reel_nav.usb_settings:main',
-            'pcl_pose_to_covariance = reel_nav.pcl_pose_to_covariance:main',
+            'initialpose = reel_nav.initialpose:main',
         ],
     },
 )

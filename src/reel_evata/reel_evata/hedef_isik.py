@@ -63,10 +63,10 @@ class SequentialNav2(Node):
         self._cancel_future = None
 
         #PATH MESAFE KONTROLU
-        self.initial_path_distance = None
+        self.previous_path_distance = None
         self.latest_path_distance = None
 
-        self.route_extension_threshold = 10.0
+        self.route_extension_threshold = 60.0
 
         self.skip_due_to_route_extension = False
         self.route_extension_cancel_requested = False
@@ -75,24 +75,24 @@ class SequentialNav2(Node):
         self.traffic_light_zones = [
 
             {
-                'x_min': -32.5,
-                'x_max': -19.2,
-                'y_min': 25.4,
-                'y_max': 37.7
+                'x_min': -86.3,
+                'x_max': -71.1,
+                'y_min': -22.3,
+                'y_max': -7.99
             },
 
             {
-                'x_min': -27.0,
-                'x_max': -15.2,
-                'y_min': -4.39,
-                'y_max': 7.25
+                'x_min': -27.6,
+                'x_max': -16.7,
+                'y_min': -4.29,
+                'y_max': 7.73
             },
 
             {
-                'x_min': -71.6,
-                'x_max': -62.7,
+                'x_min': -73.2,
+                'x_max': -62.9,
                 'y_min': -16.4,
-                'y_max': -7.06
+                'y_max': -5.62
             },
 
         ]
@@ -546,76 +546,86 @@ class SequentialNav2(Node):
                 feedback.distance_remaining
             )
 
-            self.latest_path_distance = distance
-
-            # İlk alınan rota mesafesini kaydet
-
-            # -------------------------------------------------
-            # İlk GEÇERLİ rota mesafesini kaydet
-            # 0.0 gelirse henüz başlangıç mesafesi kabul etme
-            # -------------------------------------------------
-
-            if self.initial_path_distance is None:
-
-                if distance <= 0.0:
-
-                    self.get_logger().info(
-                        '[ROTA KONTROL] Mesafe 0.0 m geldi. '
-                        'Gerçek rota mesafesi bekleniyor...',
-                        throttle_duration_sec=2.0
-                    )
-
-                    return
-
-                self.initial_path_distance = distance
+            if distance <= 0.0:
 
                 self.get_logger().info(
-                    f'[ROTA KONTROL] İlk geçerli planlanan mesafe: '
+                    '[ROTA KONTROL] '
+                    'Mesafe 0.0 geldi, gerçek path mesafesi '
+                    'bekleniyor...',
+                    throttle_duration_sec=2.0
+                )
+
+                return
+
+            # =================================================
+            # İLK GERÇEK MESAFE
+            # =================================================
+
+            if self.previous_path_distance is None:
+
+                self.previous_path_distance = distance
+                self.latest_path_distance = distance
+
+                self.get_logger().info(
+                    f'[ROTA KONTROL] '
+                    f'İlk gerçek kalan mesafe: '
                     f'{distance:.2f} m'
                 )
 
-            # Mevcut rota uzamasını hesapla
+                return
+
+            # =================================================
+            # ÖNCEKİ FEEDBACK -> YENİ FEEDBACK
+            #
+            # Örnek:
+            #
+            # Önceki: 45 m
+            # Yeni:    56 m
+            #
+            # Uzama: +11 m
+            # =================================================
 
             route_extension = (
                 distance
                 -
-                self.initial_path_distance
+                self.previous_path_distance
             )
 
             self.get_logger().info(
                 f'[ROTA KONTROL] '
-                f'Anlık={distance:.2f} m | ',
-                throttle_duration_sec=5.0
+                f'Önceki={self.previous_path_distance:.2f} m | '
+                f'Anlık={distance:.2f} m | '
+                f'Değişim={route_extension:+.2f} m',
+                throttle_duration_sec=10.0
             )
 
-            # -------------------------------------------------
-            # Rota 10 metre veya daha fazla uzadıysa
-            # -------------------------------------------------
+            # =================================================
+            # KALAN PATH BİR ANDA 10 METRE VEYA DAHA FAZLA
+            # UZADIYSA
+            # =================================================
 
             if (
                 route_extension
-                >=
-                self.route_extension_threshold
+                >= self.route_extension_threshold
                 and
                 not self.route_extension_cancel_requested
             ):
 
                 self.get_logger().warn(
                     f'[ROTA UZADI] '
-                    f'Rota {route_extension:.2f} m uzadı!'
+                    f'{self.previous_path_distance:.2f} m -> '
+                    f'{distance:.2f} m | '
+                    f'Uzama: +{route_extension:.2f} m'
                 )
 
                 self.get_logger().warn(
-                    'Aktif hedef ve bir sonraki hedef '
+                    'Aktif hedef ve sonraki hedef '
                     'ATLANACAK.'
                 )
 
-
                 self.skip_due_to_route_extension = True
-
                 self.route_extension_cancel_requested = True
 
-                # Aktif Nav2 hedefini iptal et
                 if self.current_goal_handle is not None:
 
                     self._cancel_future = (
@@ -623,11 +633,9 @@ class SequentialNav2(Node):
                         .cancel_goal_async()
                     )
 
-            self.get_logger().info(
-                f'Kalan mesafe: '
-                f'{distance:.2f} m',
-                throttle_duration_sec=5.0
-            )
+            # Bir sonraki feedback için güncelle
+            self.previous_path_distance = distance
+            self.latest_path_distance = distance
 
         except Exception as e:
 
@@ -826,7 +834,7 @@ class SequentialNav2(Node):
             # YENİ HEDEF İÇİN ROTA UZAMA KONTROLÜNÜ SIFIRLA
             # =====================================================
 
-            self.initial_path_distance = None
+            self.previous_path_distance = None
             self.latest_path_distance = None
 
             self.skip_due_to_route_extension = False

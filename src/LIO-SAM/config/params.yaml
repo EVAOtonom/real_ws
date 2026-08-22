@@ -156,7 +156,9 @@
 
     # 10 core yerine 6 core:
     # Nav2 / EKF / LiDAR driver için CPU bırakır.
-    numberOfCores: 6
+    # Mapping optimization OpenMP dongulerine daha fazla paralellik.
+    # start_evata tarafinda proses 16-31 genis CPU havuzunda calisiyor.
+    numberOfCores: 8
 
     # LiDAR ~10 Hz ise 0.10 s her LiDAR taramasında en fazla bir
     # mapping correction demektir. Burst/backlog durumunda map optimizer'ın

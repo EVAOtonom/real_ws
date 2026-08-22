@@ -85,8 +85,6 @@ class SignDynamicObstacle(Node):
         # AYARLAR
         # ======================================================
 
-        self.sign_trigger_distance = 10.0
-
         self.wall_width = 0.10
 
         self.wall_z_min = 0.0
@@ -95,7 +93,7 @@ class SignDynamicObstacle(Node):
         self.wall_edge_margin = 0.5
 
         # Bariyer 20 saniye aktif
-        self.wall_duration = 20.0
+        self.wall_duration = 30.0
 
         self.walls = {}
 
@@ -168,11 +166,6 @@ class SignDynamicObstacle(Node):
             0.2,
             self.update_walls
         )
-
-        self.get_logger().info(
-            "=============================================="
-        )
-
         self.get_logger().info(
             "Levha Dinamik Engel Node Baslatildi"
         )
@@ -270,36 +263,76 @@ class SignDynamicObstacle(Node):
 
         sign_map = {
 
-            "sol": [
-                "front",
-                "right"
-            ],
+            "sol": {
+                "barriers": [
+                    "front",
+                    "right"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "sag": [
-                "front",
-                "left"
-            ],
+            "sag": {
+                "barriers": [
+                    "front",
+                    "left"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "ileriden_sola": [
-                "front",
-                "right"
-            ],
+            "ileriden_sola": {
+                "barriers": [
+                    "front",
+                    "right"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "ileriden_saga": [
-                "front",
-                "left"
-            ],
+            "ileriden_saga": {
+                "barriers": [
+                    "front",
+                    "left"
+                ],
+                "trigger_distance": 10.0
+            },
+            "ilerisol": {
+                "barriers": [
+                    "right"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "soladonulmez": [
-                "left"
-            ],
+            "ilerisag": {
+                "barriers": [
+                    "left"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "sagadonulmez": [
-                "right"
-            ],
+            "soladonulmez": {
+                "barriers": [
+                    "left"
+                ],
+                "trigger_distance": 10.0
+            },
 
-            "girisiyok": {
-                "front"
+            "sagadonulemez": {
+                "barriers": [
+                    "right"
+                ],
+                "trigger_distance": 10.0
+            },
+
+            "girilmez": {
+                "barriers": [
+                    "front"
+                ],
+                "trigger_distance": 16.0
+            },
+            "kavsak": {
+                "barriers": [
+                    "left"
+                ],
+                "trigger_distance": 9.0
             },
         }
 
@@ -307,8 +340,12 @@ class SignDynamicObstacle(Node):
         # LEVHALAR
         # ======================================================
 
-        for sign_key, barrier_names in sign_map.items():
+        for sign_key, sign_config in sign_map.items():
 
+            barrier_names = sign_config["barriers"]
+
+            trigger_distance = sign_config["trigger_distance"]
+            
             if sign_key not in data:
                 continue
 
@@ -322,7 +359,7 @@ class SignDynamicObstacle(Node):
 
                 continue
 
-            if distance > self.sign_trigger_distance:
+            if distance > trigger_distance:
                 continue
 
             self.get_logger().warn(

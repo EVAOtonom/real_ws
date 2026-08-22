@@ -2,20 +2,15 @@
 
 import copy
 import json
-import logging
 import math
-import os
 import time
 
-import cv2
-import numpy as np
 import rclpy
 import tf2_ros
 
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
-from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseArray, PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry, Path
 from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
 from rcl_interfaces.srv import SetParameters
@@ -23,13 +18,8 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import String
-from tf2_geometry_msgs import do_transform_pose
 from tf2_ros import Buffer, TransformListener
-from ultralytics import YOLO
-
-logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 
 # ============================================================
@@ -39,126 +29,83 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 MAP_FRAME = 'map'
 BASE_FRAME = 'base_footprint'
 ODOM_TOPIC = '/odom'
-AMCL_TOPIC = '/amcl_pose'
+DETECTED_SIGNS_TOPIC = '/detected_signs'
+DETECTED_PARKING_DETAIL_TOPIC = '/detected_parking_sign'
 
 
 # ============================================================
-# PARK ALANI TETİK POLİGONU
+# PARK ALANI TETİK POLİGONU - YENİ 4 NOKTA
 # ============================================================
-#
-# Kullanıcının verdiği ilk 4 /initialpose noktası.
-# Noktalar dikdörtgen çevresinde sırasıyla verilmiştir.
-#
+
 PARK_TETIK_BOLGESI = [
-    (-22.49496841430664,  -15.37213134765625),   # 1
-    (-16.897747039794922,  -9.00704288482666),  # 2
-    (-11.72718334197998,  -14.860231399536133), # 3
-    (-18.43360710144043,  -20.57685661315918),  # 4
+    (-18.085346221923828,   2.321505546569824),
+    (-32.98799133300781,   -9.707924842834473),
+    (-24.771465301513672, -21.28096580505371),
+    (-13.22526741027832,  -10.970020294189453),
 ]
 
 
 # ============================================================
-# 1. PARK LEVHASI TARAMA NOKTASI (STAGING)
+# PARK ALANINA GİRİNCE NORMAL FollowPath HIZINI DÜŞÜR
 # ============================================================
-#
-# Araç park tetik bölgesine girince normal navigasyon iptal edilir
-# ve önce bu noktaya gelir. Burada tam duruş doğrulandıktan sonra
-# 10 saniyelik İLK park levhası taraması yapılır.
-#
-STAGING_X = -16.063560485839844
-STAGING_Y = -16.013036727905273
-STAGING_YAW_DEG = 0.9814232221021342
+# test(2).yaml içindeki normal FollowPath desired_linear_vel = 1.0.
+# Trigger alanına girince yalnızca staging/arama waypointleri için 0.35'e çekilir.
+# Cüllop park zaten ParkFollowPath kullanıyor ve YAML'da 0.35 m/s.
+
+NORMAL_FOLLOWPATH_DESIRED_LINEAR_VEL = 1.0
+PARK_AREA_FOLLOWPATH_DESIRED_LINEAR_VEL = 0.35
 
 
 # ============================================================
-# 2. VE SON PARK LEVHASI TARAMA NOKTASI
+# 1. PARK LEVHASI ARAMA WAYPOINTİ
 # ============================================================
-#
-# Kullanıcının verdiği /initialpose:
-#
-# position:
-#   x: -6.516376495361328
-#   y: -16.529788970947266
-#   z: 0.0
-#
-# orientation:
-#   x: 0.0
-#   y: 0.0
-#   z: 0.3470369129922216
-#   w: 0.9378514706609087
-#
-# yaw ~= 40.612 derece
-#
-# İlk 10 saniyelik taramada PARK bulunamazsa araç buraya
-# NavigateToPose ile gider. Yay hareketi şimdilik YOKTUR.
-#
-SECOND_SEARCH_X = -6.516376495361328
-SECOND_SEARCH_Y = -16.529788970947266
+
+STAGING_X = -16.769689559936523
+STAGING_Y = -16.44771957397461
+STAGING_YAW_DEG = -46.507636965324
+
+
+# ============================================================
+# 2. PARK LEVHASI ARAMA WAYPOINTİ
+# ============================================================
+
+SECOND_SEARCH_X = -12.92992877960205
+SECOND_SEARCH_Y = -18.595855712890625
 SECOND_SEARCH_Z = 0.0
-SECOND_SEARCH_OZ = 0.3470369129922216
-SECOND_SEARCH_OW = 0.9378514706609087
-SECOND_SEARCH_YAW_RAD = 2.0 * math.atan2(
-    SECOND_SEARCH_OZ,
-    SECOND_SEARCH_OW,
-)
+SECOND_SEARCH_OZ = -0.07136896896585412
+SECOND_SEARCH_OW = 0.9974499838431754
+SECOND_SEARCH_YAW_RAD = -0.142859389838442
 
 
 # ============================================================
-# DURUŞ KONTROLÜ
+# DURUŞ / TARAMA
 # ============================================================
 
 STOP_LINEAR_THRESHOLD = 0.05
 STOP_ANGULAR_THRESHOLD = 0.05
 STOP_HOLD_SECONDS = 1.0
-
-# Normal route cancel edildikten sonra staging goal gönderme gecikmesi.
 CANCEL_WAIT_SECONDS = 0.50
-
-
-# ============================================================
-# PARK LEVHASI TARAMA
-# ============================================================
-
-# Her arama penceresi 10 saniyedir.
-#
-# 1. arama:
-#   STAGING noktasında 10 sn.
-#
-# 2. arama:
-#   SECOND_SEARCH noktasında 10 sn.
-#
-# Geçerli PARK tabelası görülür görülmez 10 saniyenin dolması
-# beklenmeden park seçilir ve levha arama kalıcı olarak kapatılır.
-#
 PARK_SIGN_SCAN_SECONDS = 10.0
-
-# İlk geçerli PARK tespitinde park seçilip planner başlatılır.
 PARK_REQUIRED_DETECTIONS = 1
 
-PARK_CONFIDENCE_THRESHOLD = 0.60
-DETECTION_INTERVAL = 0.15
-YOLO_GENERAL_MIN_CONFIDENCE = 0.60
-MIN_SIGN_DISTANCE = 0.70
-MAX_SIGN_DISTANCE = 25.0
 
-# İkinci aramada da PARK levhası bulunamazsa yalnız bu listedeki
-# parklar fallback adayıdır.
-#
-# ÖNEMLİ:
-# Gerçek sistemde park etmenin yasak olduğu bilinen slotları bu
-# listeden ÇIKAR. Şimdilik 1-9 açık bırakılmıştır.
-#
-SAFE_FALLBACK_PARKS = {
-    1, 2, 3, 4, 5, 6, 7, 8, 9,
+# ============================================================
+# SABİT FALLBACK PARK
+# ============================================================
+# İki 10 saniyelik aramada da PARK görülmezse RANDOM YOK.
+# Buradaki park numarasına gidilir. İstediğin parkı sadece bu satırdan değiştir.
+
+FIXED_FALLBACK_PARK_INDEX = 1
+
+
+# Dış levha tespit node'undan gelebilecek park-yasak sınıfları.
+NO_PARKING_CLASS_ALIASES = {
+    'park yasak',
+    'park yasagi',
+    'park etmek yasak',
+    'no parking',
+    'noparking',
 }
-
-# Kamera GUI yalnızca iki park levhası tarama penceresinde açılır.
-SHOW_CAMERA_DURING_PARK_SCAN = True
-CAMERA_WINDOW_NAME = 'Park Levha Taramasi'
-
-# PointCloud frame'i map'e bağlı değilse eski çalışan fallback.
-LEGACY_SIGN_FRAME = 'camera_link'
-
 
 # ============================================================
 # CÜLLOP PARK GEOMETRİSİ
@@ -289,7 +236,8 @@ PARK_NOKTALARI = {
     },
 }
 
-class SignDetectorParkingManager(Node):
+
+class ExternalSignParkingManager(Node):
     STATE_NORMAL = 'NORMAL'
     STATE_CANCELING = 'CANCELING'
     STATE_STAGING_NAV = 'STAGING_NAV'
@@ -304,203 +252,99 @@ class SignDetectorParkingManager(Node):
     STATE_ERROR = 'ERROR'
 
     def __init__(self):
-        super().__init__('sign_detector_adaptive_parking_manager')
+        super().__init__('external_sign_parking_manager')
 
-        # ----------------------------------------------------
-        # YOLO / CAMERA
-        # ----------------------------------------------------
-        dir_path = os.path.dirname(os.path.realpath(__file__))
-        workspace_root = dir_path.split('/install')[0]
-
-        model_candidates = [
-            os.path.join(dir_path, 'utils', 'bestHavva.pt'),
-            os.path.join(
-                workspace_root,
-                'src',
-                'reel_evata',
-                'reel_evata',
-                'utils',
-                'bestHavva.pt',
-            ),
-        ]
-
-        model_path = next(
-            (p for p in model_candidates if os.path.exists(p)),
-            model_candidates[0],
-        )
-
-        self.model = YOLO(model_path)
-        self.bridge = CvBridge()
-        self.fx = 277.0
-        self.latest_pointcloud = None
-        self.annotated_image = None
-        self.last_detections = {}
-        self.last_detection_time = 0.0
-        self.camera_window_opened = False
-        self.camera_window_failed = False
-
-        # ----------------------------------------------------
-        # TF
-        # ----------------------------------------------------
+        # TF: araç konumu map -> base_footprint üzerinden alınır.
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ----------------------------------------------------
         # SUBSCRIBERS
         # ----------------------------------------------------
-        self.create_subscription(
-            Image,
-            '/zed/zed_node/rgb/image_rect_color',
-            self.color_image_callback,
-            10,
-        )
-        self.create_subscription(
-            CameraInfo,
-            '/zed/zed_node/rgb/camera_info',
-            self.camera_info_callback,
-            10,
-        )
-        self.create_subscription(
-            PointCloud2,
-            '/zed/zed_node/point_cloud/cloud_registered',
-            self.point_cloud_callback,
-            10,
-        )
-        self.create_subscription(
-            Odometry,
-            ODOM_TOPIC,
-            self.odom_callback,
-            20,
-        )
-        self.create_subscription(
-            PoseWithCovarianceStamped,
-            AMCL_TOPIC,
-            self.amcl_pose_callback,
-            20,
-        )
+        self.create_subscription(Odometry, ODOM_TOPIC, self.odom_callback, 20)
 
-        # ----------------------------------------------------
-        # PUBLISHERS
-        # ----------------------------------------------------
-        self.sign_publisher = self.create_publisher(
+        # Ana levha tespit node'unun mevcut genel çıktısı.
+        self.create_subscription(
             String,
-            '/detected_signs',
-            10,
+            DETECTED_SIGNS_TOPIC,
+            self.detected_signs_callback,
+            20,
         )
 
+        # Ana levha tespit node'unun PARK/PARK-YASAK için map koordinatlı çıktısı.
+        self.create_subscription(
+            String,
+            DETECTED_PARKING_DETAIL_TOPIC,
+            self.detected_parking_sign_callback,
+            20,
+        )
+
+        # ----------------------------------------------------
+        # PARK DEBUG PUBLISHERS
+        # ----------------------------------------------------
         path_qos = QoSProfile(depth=1)
         path_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-
-        self.goal_poses_pub = self.create_publisher(
-            PoseArray,
-            '/parking/goal_poses',
-            path_qos,
-        )
-        self.planner_path_pub = self.create_publisher(
-            Path,
-            '/parking/planner_path',
-            path_qos,
-        )
-        self.follow_path_pub = self.create_publisher(
-            Path,
-            '/parking/follow_path',
-            path_qos,
-        )
+        self.goal_poses_pub = self.create_publisher(PoseArray, '/parking/goal_poses', path_qos)
+        self.planner_path_pub = self.create_publisher(Path, '/parking/planner_path', path_qos)
+        self.follow_path_pub = self.create_publisher(Path, '/parking/follow_path', path_qos)
 
         # ----------------------------------------------------
         # NAV2 ACTION CLIENTS
         # ----------------------------------------------------
-        # Normal navigasyondan staging noktasına geçiş.
-        self.navigate_client = ActionClient(
-            self,
-            NavigateToPose,
-            'navigate_to_pose',
-        )
+        self.navigate_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self.planner_client = ActionClient(self, ComputePathThroughPoses, 'compute_path_through_poses')
+        self.controller_client = ActionClient(self, FollowPath, 'follow_path')
 
-        # Cüllop park planner/controller.
-        self.planner_client = ActionClient(
-            self,
-            ComputePathThroughPoses,
-            'compute_path_through_poses',
-        )
-        self.controller_client = ActionClient(
-            self,
-            FollowPath,
-            'follow_path',
-        )
+        # Aktif normal navigasyonu iptal etmek için.
+        self.cancel_navigate_client = self.create_client(CancelGoal, '/navigate_to_pose/_action/cancel_goal')
+        self.cancel_navigate_through_client = self.create_client(CancelGoal, '/navigate_through_poses/_action/cancel_goal')
+        self.cancel_follow_client = self.create_client(CancelGoal, '/follow_path/_action/cancel_goal')
 
-        # ----------------------------------------------------
-        # ACTIVE NAVIGATION CANCEL SERVICES
-        # ----------------------------------------------------
-        self.cancel_navigate_client = self.create_client(
-            CancelGoal,
-            '/navigate_to_pose/_action/cancel_goal',
-        )
-        self.cancel_navigate_through_client = self.create_client(
-            CancelGoal,
-            '/navigate_through_poses/_action/cancel_goal',
-        )
-        self.cancel_follow_client = self.create_client(
-            CancelGoal,
-            '/follow_path/_action/cancel_goal',
-        )
-
-        # ----------------------------------------------------
-        # CONTROLLER PARAMETER CLIENT
-        # ----------------------------------------------------
-        self.set_params_client = self.create_client(
-            SetParameters,
-            '/controller_server/set_parameters',
-        )
+        # Goal tolerance + trigger alanı hız değişikliği aynı controller_server servisinden.
+        self.set_params_client = self.create_client(SetParameters, '/controller_server/set_parameters')
 
         # ----------------------------------------------------
         # STATE / LOCALIZATION
         # ----------------------------------------------------
         self.state = self.STATE_NORMAL
         self.zone_triggered = False
-
         self.current_linear_speed = 999.0
         self.current_angular_speed = 999.0
         self.odom_received = False
         self.stopped_since = None
-
-        self.latest_amcl_map_pose = None
         self.last_robot_map_pose = None
         self.first_position_logged = False
 
         # ----------------------------------------------------
-        # STAGING
+        # STAGING / SEARCH NAV
         # ----------------------------------------------------
         self.cancel_started_at = None
         self.staging_goal_sent = False
         self.staging_goal_handle = None
-
-        # İkinci arama noktasına gidiş runtime.
         self.second_search_goal_sent = False
         self.second_search_goal_handle = None
 
         # ----------------------------------------------------
-        # PARK LEVHASI
+        # EXTERNAL PARK SIGN SEARCH
         # ----------------------------------------------------
         self.park_detection_count = 0
         self.park_detection_points = []
         self.park_search_started_at = None
-
-        # 0 = henüz arama yok
-        # 1 = staging'deki ilk arama
-        # 2 = ikinci ve son arama
         self.park_search_attempt = 0
-
-        # Bir PARK levhası bulunduğunda veya ikinci arama bittiğinde
-        # True olur. Bundan sonra PARK levhası seçim algoritmasına
-        # bir daha dahil edilmez.
         self.park_sign_search_permanently_disabled = False
-
+        self.no_parking_slots = set()
+        self.no_parking_detection_points = []
         self.selected_park_index = None
         self.selection_reason = None
+        self.last_generic_park_log = 0.0
 
-        self.sign_tf_warning_logged = False
-        self.legacy_tf_warning_logged = False
+        # ----------------------------------------------------
+        # TRIGGER AREA SPEED
+        # ----------------------------------------------------
+        self.park_area_speed_request_pending = False
+        self.park_area_speed_active = False
+        self.restore_speed_request_pending = False
+        self.restore_speed_future = None
 
         # ----------------------------------------------------
         # CÜLLOP PARK RUNTIME
@@ -511,7 +355,6 @@ class SignDetectorParkingManager(Node):
         self.goal_poses = []
         self.goal_labels = []
         self.planned_path = None
-
         self.feedback_counter = 0
         self.parking_started = False
         self.parking_finished = False
@@ -523,16 +366,18 @@ class SignDetectorParkingManager(Node):
 
         self.control_timer = self.create_timer(0.10, self.control_loop)
 
+
         self.get_logger().info(
-            '\n========== OTOMATİK PARK + CÜLLOP PARK ==========' '\n'
+            '\n========== EXTERNAL LEVHA + CÜLLOP PARK ==========\n'
             f'Tetik poligonu: {PARK_TETIK_BOLGESI}\n'
-            f'1. tarama / staging: X={STAGING_X:.3f}, Y={STAGING_Y:.3f}, '
+            f'Trigger alanı FollowPath hızı: {PARK_AREA_FOLLOWPATH_DESIRED_LINEAR_VEL:.2f} m/s\n'
+            f'1. arama waypoint: X={STAGING_X:.3f}, Y={STAGING_Y:.3f}, '
             f'Yaw={STAGING_YAW_DEG:.2f}°\n'
-            f'2. tarama: X={SECOND_SEARCH_X:.3f}, Y={SECOND_SEARCH_Y:.3f}, '
+            f'2. arama waypoint: X={SECOND_SEARCH_X:.3f}, Y={SECOND_SEARCH_Y:.3f}, '
             f'Yaw={math.degrees(SECOND_SEARCH_YAW_RAD):.2f}°\n'
-            f'Her tarama süresi: {PARK_SIGN_SCAN_SECONDS:.0f} sn\n'
-            'Levha bulunursa: levhaya en yakın park slotu\n'
-            f'İki taramada da yoksa güvenli fallback: {sorted(SAFE_FALLBACK_PARKS)}\n'
+            f'Her arama: {PARK_SIGN_SCAN_SECONDS:.0f} sn\n'
+            f'Sabit fallback park: #{FIXED_FALLBACK_PARK_INDEX}\n'
+            f'Levha topicleri: {DETECTED_SIGNS_TOPIC} + {DETECTED_PARKING_DETAIL_TOPIC}\n'
             f'Park planner/controller: {PLANNER_ID} / {CONTROLLER_ID}'
         )
 
@@ -627,34 +472,13 @@ class SignDetectorParkingManager(Node):
             return None
 
     def get_robot_pose_map(self):
-        if self.latest_amcl_map_pose is not None:
-            return self.latest_amcl_map_pose
+        # Araç konumu yalnızca TF ağacındaki
+        # map -> base_footprint dönüşümünden alınır.
         return self.get_robot_pose_map_tf()
 
     # ========================================================
-    # AMCL / ODOM
+    # TF KONUM / ODOM
     # ========================================================
-
-    def amcl_pose_callback(self, msg):
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-
-        self.latest_amcl_map_pose = (
-            float(p.x),
-            float(p.y),
-            self.quaternion_to_yaw(q.x, q.y, q.z, q.w),
-        )
-
-        if not self.first_position_logged:
-            self.first_position_logged = True
-            x, y, yaw = self.latest_amcl_map_pose
-            inside = self.point_in_polygon(x, y, PARK_TETIK_BOLGESI)
-            self.get_logger().warn(
-                '\n[KONUM KONTROL - 1 KEZ]\n'
-                f'/amcl_pose: X={x:.3f}, Y={y:.3f}, '
-                f'Yaw={math.degrees(yaw):.1f}°\n'
-                f'Park alanında mı: {"EVET" if inside else "HAYIR"}'
-            )
 
     def odom_callback(self, msg):
         self.odom_received = True
@@ -670,9 +494,18 @@ class SignDetectorParkingManager(Node):
         if robot_pose is not None:
             self.last_robot_map_pose = robot_pose
 
-        # ----------------------------------------------------
-        # 1) NORMAL NAVİGASYON -> PARK ALANINA GİRİŞ
-        # ----------------------------------------------------
+            if not self.first_position_logged:
+                self.first_position_logged = True
+                x, y, yaw = robot_pose
+                inside = self.point_in_polygon(x, y, PARK_TETIK_BOLGESI)
+                self.get_logger().warn(
+                    '\n[KONUM KONTROL - 1 KEZ]\n'
+                    f'TF map -> base_footprint: X={x:.3f}, Y={y:.3f}, '
+                    f'Yaw={math.degrees(yaw):.1f}°\n'
+                    f'Park alanında mı: {"EVET" if inside else "HAYIR"}'
+                )
+
+        # 1) NORMAL -> trigger alanı
         if self.state == self.STATE_NORMAL:
             if self.zone_triggered or robot_pose is None:
                 return
@@ -686,17 +519,22 @@ class SignDetectorParkingManager(Node):
                 self.get_logger().warn(
                     '\n[PARK ALANI TETİKLENDİ]\n'
                     f'Araç park alanına girdi: X={x:.3f}, Y={y:.3f}\n'
+                    f'FollowPath hızı {PARK_AREA_FOLLOWPATH_DESIRED_LINEAR_VEL:.2f} m/s yapılacak.\n'
                     'Mevcut normal Nav2 waypoint/route iptal ediliyor.'
                 )
+
+                self.request_park_area_speed()
                 self.cancel_active_navigation()
             return
 
-        # ----------------------------------------------------
-        # 2) CANCEL -> STAGING
-        # ----------------------------------------------------
+        # 2) CANCEL -> hız gerçekten düştükten sonra 1. waypoint
         if self.state == self.STATE_CANCELING:
             if self.cancel_started_at is None:
                 self.cancel_started_at = time.monotonic()
+
+            if not self.park_area_speed_active:
+                self.request_park_area_speed()
+                return
 
             if (
                 not self.staging_goal_sent
@@ -705,9 +543,7 @@ class SignDetectorParkingManager(Node):
                 self.send_staging_goal()
             return
 
-        # ----------------------------------------------------
-        # 3) STAGING BİTTİ -> GERÇEK DURUŞU DOĞRULA
-        # ----------------------------------------------------
+        # 3) Search waypoint tamamlandı -> araç tam dursun
         if self.state == self.STATE_WAIT_STOP:
             linear_ok = abs(self.current_linear_speed) <= STOP_LINEAR_THRESHOLD
             angular_ok = abs(self.current_angular_speed) <= STOP_ANGULAR_THRESHOLD
@@ -723,9 +559,7 @@ class SignDetectorParkingManager(Node):
                 self.stopped_since = None
             return
 
-        # ----------------------------------------------------
-        # 4) PARK LEVHASI: GÖRÜLÜR GÖRÜLMEZ PARKI BAŞLAT
-        # ----------------------------------------------------
+        # 4) Dış levha node'undan PARK bekle
         if self.state == self.STATE_WAIT_PARK_SIGN:
             if self.park_search_started_at is None:
                 self.park_search_started_at = time.monotonic()
@@ -735,9 +569,7 @@ class SignDetectorParkingManager(Node):
                 self.finish_park_sign_scan_and_select()
             return
 
-        # ----------------------------------------------------
-        # 5) CÜLLOP PARK SERVERLARINI BEKLE / PARKI BAŞLAT
-        # ----------------------------------------------------
+        # 5) Cüllop park serverları
         if self.state == self.STATE_WAIT_PARK_SERVERS:
             self.try_start_selected_parking()
             return
@@ -801,7 +633,7 @@ class SignDetectorParkingManager(Node):
 
         self.get_logger().warn(
             '\n[STAGING GOAL]\n'
-            'Eski waypoint iptal edildi. Park tarama waypointi gönderiliyor.\n'
+            'Eski waypoint iptal edildi. 1. park levhası arama waypointi gönderiliyor.\n'
             f'X={STAGING_X:.3f}, Y={STAGING_Y:.3f}, '
             f'Yaw={STAGING_YAW_DEG:.2f}°'
         )
@@ -937,7 +769,7 @@ class SignDetectorParkingManager(Node):
         )
 
     # ========================================================
-    # PARK LEVHASI TARAMASI - SADECE 2 KEZ
+    # DIŞ PARK LEVHASI TOPIC TARAMASI - SADECE 2 KEZ
     # ========================================================
 
     def start_park_sign_scan(self):
@@ -964,17 +796,16 @@ class SignDetectorParkingManager(Node):
             location_text = 'İKİNCİ NOKTA / SON TARAMA'
 
         self.get_logger().warn(
-            '\n[PARK LEVHASI TARAMASI BAŞLADI]\n'
+            '\n[DIŞ PARK LEVHASI TOPIC TARAMASI BAŞLADI]\n'
             f'Arama: {self.park_search_attempt}/2 - {location_text}\n'
             f'Süre: {PARK_SIGN_SCAN_SECONDS:.0f} sn\n'
             'Geçerli PARK tabelası görülür görülmez timeout beklenmeden '
-            'park seçilecek.'
+            'park seçilecek. PARK YASAK görülürse ilgili slot elenecek.'
         )
 
     def finish_park_sign_scan_and_select(self):
         if self.state != self.STATE_WAIT_PARK_SIGN:
             return
-
         if self.park_sign_search_permanently_disabled:
             return
 
@@ -982,516 +813,281 @@ class SignDetectorParkingManager(Node):
         if self.park_search_started_at is not None:
             elapsed = time.monotonic() - self.park_search_started_at
 
-        self.close_camera_window()
-
-        # ----------------------------------------------------
-        # PARK LEVHASI BULUNDU
-        # ----------------------------------------------------
-        if self.park_detection_count >= PARK_REQUIRED_DETECTIONS:
-            avg_x = sum(p[0] for p in self.park_detection_points) / len(
-                self.park_detection_points
-            )
-            avg_y = sum(p[1] for p in self.park_detection_points) / len(
-                self.park_detection_points
-            )
+        # Dış levha detector'ünden map koordinatlı PARK geldiyse en yakın uygun slot.
+        if self.park_detection_count >= PARK_REQUIRED_DETECTIONS and self.park_detection_points:
+            avg_x = sum(p[0] for p in self.park_detection_points) / len(self.park_detection_points)
+            avg_y = sum(p[1] for p in self.park_detection_points) / len(self.park_detection_points)
 
             selected_index, selected_distance = self.find_nearest_park(
                 avg_x,
                 avg_y,
+                excluded=self.no_parking_slots,
             )
 
-            self.selected_park_index = selected_index
-            self.selection_reason = (
-                f'PARK_SIGN_SEARCH_{self.park_search_attempt}'
-            )
+            if selected_index is not None:
+                self.selected_park_index = selected_index
+                self.selection_reason = f'EXTERNAL_PARK_SIGN_SEARCH_{self.park_search_attempt}'
+                self.park_sign_search_permanently_disabled = True
+                self.park_search_started_at = None
 
-            # Levha bulundu. Bundan sonra bu node PARK levhasını
-            # bir daha park seçimi için kullanmayacak.
-            self.park_sign_search_permanently_disabled = True
-            self.park_search_started_at = None
+                self.get_logger().warn(
+                    '\n[DIŞ LEVHA NODE -> PARK BULUNDU]\n'
+                    f'Arama: {self.park_search_attempt}/2\n'
+                    f'Tespit süresi: {elapsed:.1f} sn\n'
+                    f'Levha ortalama map: X={avg_x:.3f}, Y={avg_y:.3f}\n'
+                    f'PARK YASAK slotlar: {sorted(self.no_parking_slots)}\n'
+                    f'Seçilen en yakın park: #{selected_index}\n'
+                    f'Levha -> park mesafesi: {selected_distance:.2f} m'
+                )
+                self.state = self.STATE_WAIT_PARK_SERVERS
+                return
 
-            self.get_logger().warn(
-                '\n[PARK LEVHASI BULUNDU - LEVHA ARAMA KAPATILDI]\n'
-                f'Arama: {self.park_search_attempt}/2\n'
-                f'Tespit süresi: {elapsed:.1f} sn\n'
-                f'Geçerli tespit: {self.park_detection_count}\n'
-                f'Tabela ortalama map konumu: X={avg_x:.3f}, Y={avg_y:.3f}\n'
-                f'En yakın park: #{selected_index}\n'
-                f'Tabela -> park mesafesi: {selected_distance:.2f} m'
-            )
-
-            self.state = self.STATE_WAIT_PARK_SERVERS
-            return
-
-        # ----------------------------------------------------
-        # 1. TARAMADA BULUNAMADI -> İKİNCİ NOKTAYA GİT
-        # ----------------------------------------------------
+        # 1. 10 saniye bitti -> 2. waypoint.
         if self.park_search_attempt == 1:
             self.park_search_started_at = None
             self.reset_park_confirmation()
             self.send_second_search_goal()
             return
 
-        # ----------------------------------------------------
-        # 2. VE SON TARAMADA DA BULUNAMADI
-        #
-        # PARK LEVHASI ARAMA BURADA KALICI OLARAK KAPANIR.
-        # ----------------------------------------------------
+        # 2. 10 saniye de bitti -> RANDOM YOK, sabit park.
         if self.park_search_attempt == 2:
             self.park_sign_search_permanently_disabled = True
             self.park_search_started_at = None
 
-            selected_index, selected_distance = (
-                self.select_nearest_safe_fallback_park()
-            )
-
-            if selected_index is None:
+            if FIXED_FALLBACK_PARK_INDEX not in PARK_NOKTALARI:
                 self.finish_with_error(
-                    'İki taramada da PARK levhası bulunamadı ve '
-                    'SAFE_FALLBACK_PARKS içinde kullanılabilir slot yok.'
+                    f'FIXED_FALLBACK_PARK_INDEX geçersiz: #{FIXED_FALLBACK_PARK_INDEX}'
                 )
                 return
 
-            self.selected_park_index = selected_index
-            self.selection_reason = 'SAFE_FALLBACK_AFTER_TWO_SCANS'
+            if FIXED_FALLBACK_PARK_INDEX in self.no_parking_slots:
+                self.finish_with_error(
+                    f'Sabit fallback park #{FIXED_FALLBACK_PARK_INDEX}, PARK YASAK olarak işaretlendi.'
+                )
+                return
+
+            self.selected_park_index = FIXED_FALLBACK_PARK_INDEX
+            self.selection_reason = 'FIXED_FALLBACK_AFTER_TWO_SCANS'
 
             self.get_logger().warn(
-                '\n[2. TARAMADA DA PARK LEVHASI YOK]\n'
+                '\n[2. TARAMADA DA PARK YOK - SABİT FALLBACK]\n'
                 f'Tarama süresi: {elapsed:.1f} sn\n'
-                'PARK levhası arama KALICI OLARAK KAPATILDI.\n'
-                f'Güvenli fallback listesi: {sorted(SAFE_FALLBACK_PARKS)}\n'
-                f'Seçilen en yakın fallback park: #{selected_index}\n'
-                f'Araç -> fallback park mesafesi: {selected_distance:.2f} m'
+                'Random seçim KALDIRILDI.\n'
+                f'Gidilecek sabit park: #{FIXED_FALLBACK_PARK_INDEX}'
             )
-
             self.state = self.STATE_WAIT_PARK_SERVERS
             return
 
         self.finish_with_error(
-            f'Beklenmeyen park levhası arama durumu: '
-            f'{self.park_search_attempt}'
+            f'Beklenmeyen park levhası arama durumu: {self.park_search_attempt}'
         )
 
     # ========================================================
-    # CAMERA / POINTCLOUD / TF
+    # DIŞ LEVHA TESPİT NODE'U
     # ========================================================
 
-    def point_cloud_callback(self, msg):
-        self.latest_pointcloud = msg
+    @staticmethod
+    def normalize_sign_class_name(class_name):
+        name = str(class_name).strip().lower()
+        translations = str.maketrans({
+            'ı': 'i', 'ş': 's', 'ğ': 'g', 'ü': 'u', 'ö': 'o', 'ç': 'c',
+        })
+        name = name.translate(translations)
+        name = name.replace('_', ' ').replace('-', ' ')
+        return ' '.join(name.split())
 
-    def camera_info_callback(self, msg):
-        self.fx = msg.k[0]
-
-    def get_point_from_pointcloud(self, center_x, center_y):
-        if self.latest_pointcloud is None:
-            return None, None, None
-
-        try:
-            cloud = self.latest_pointcloud
-            center_x = int(min(max(center_x, 0), cloud.width - 1))
-            center_y = int(min(max(center_y, 0), cloud.height - 1))
-
-            x_offset = next(f.offset for f in cloud.fields if f.name == 'x')
-            y_offset = next(f.offset for f in cloud.fields if f.name == 'y')
-            z_offset = next(f.offset for f in cloud.fields if f.name == 'z')
-
-            point_offset = center_y * cloud.row_step + center_x * cloud.point_step
-            data = cloud.data
-
-            x = np.frombuffer(
-                data,
-                dtype=np.float32,
-                count=1,
-                offset=point_offset + x_offset,
-            )[0]
-            y = np.frombuffer(
-                data,
-                dtype=np.float32,
-                count=1,
-                offset=point_offset + y_offset,
-            )[0]
-            z = np.frombuffer(
-                data,
-                dtype=np.float32,
-                count=1,
-                offset=point_offset + z_offset,
-            )[0]
-
-            if any(math.isnan(v) or math.isinf(v) for v in (x, y, z)):
-                return None, None, None
-
-            return float(x), float(y), float(z)
-        except Exception:
-            return None, None, None
-
-    def transform_xyz_with_frame(self, x, y, z, source_frame):
-        pose = PoseStamped()
-        pose.header.frame_id = source_frame
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose.position.x = float(x)
-        pose.pose.position.y = float(y)
-        pose.pose.position.z = float(z)
-        pose.pose.orientation.w = 1.0
-
-        transform = self.tf_buffer.lookup_transform(
-            MAP_FRAME,
-            source_frame,
-            rclpy.time.Time(),
-        )
-
-        transformed = do_transform_pose(pose.pose, transform)
-        return (
-            float(transformed.position.x),
-            float(transformed.position.y),
-            float(transformed.position.z),
-        )
-
-    def transform_camera_point_to_map(self, x, y, z):
-        cloud_frame = None
-        if self.latest_pointcloud is not None:
-            cloud_frame = self.latest_pointcloud.header.frame_id
-
-        if cloud_frame:
-            try:
-                return self.transform_xyz_with_frame(x, y, z, cloud_frame)
-            except (
-                tf2_ros.LookupException,
-                tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException,
-            ):
-                pass
-
-        try:
-            result = self.transform_xyz_with_frame(
-                x,
-                y,
-                z,
-                LEGACY_SIGN_FRAME,
-            )
-
-            if not self.legacy_tf_warning_logged:
-                self.legacy_tf_warning_logged = True
-                self.get_logger().warn(
-                    '[LEVHA TF] PointCloud frame map ağacına bağlı değil; '
-                    f'fallback source={LEGACY_SIGN_FRAME} kullanılıyor.'
-                )
-            return result
-
-        except (
-            tf2_ros.LookupException,
-            tf2_ros.ConnectivityException,
-            tf2_ros.ExtrapolationException,
-        ) as error:
-            if not self.sign_tf_warning_logged:
-                self.sign_tf_warning_logged = True
-                self.get_logger().error(
-                    '[LEVHA TF - 1 KEZ] map dönüşümü yapılamıyor. '
-                    f'cloud_frame={cloud_frame}, fallback={LEGACY_SIGN_FRAME}. '
-                    f'Hata: {error}'
-                )
-            return None, None, None
-
-    # ========================================================
-    # YOLO
-    # ========================================================
-
-    def run_yolo(self, image):
-        results = self.model(image, imgsz=960, verbose=False)
-        detections = {}
-
-        for result in results:
-            for box in result.boxes:
-                confidence = float(box.conf)
-                if confidence <= YOLO_GENERAL_MIN_CONFIDENCE:
-                    continue
-
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                class_name = self.model.names[int(box.cls)]
-
-                old = detections.get(class_name)
-                if old is None or confidence > old[4]:
-                    detections[class_name] = (
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        confidence,
-                    )
-
-        return detections
+    def is_no_parking_class(self, class_name):
+        name = self.normalize_sign_class_name(class_name)
+        if name in NO_PARKING_CLASS_ALIASES:
+            return True
+        return ('park' in name and 'yasak' in name) or ('no parking' in name)
 
     def reset_park_confirmation(self):
         self.park_detection_count = 0
         self.park_detection_points = []
 
-    def process_park_detection(self, detections):
-        # PARK levhası yalnızca 1. veya 2. aktif tarama penceresinde
-        # park seçimine etki eder.
+    def detected_signs_callback(self, msg):
+        # Bu topic mevcut levha kodunun genel çıktısıdır: {"park": mesafe, ...}
+        # Park seçimi için map koordinatı gereken asıl veri /detected_parking_sign'dan gelir.
         if self.state != self.STATE_WAIT_PARK_SIGN:
             return
-
-        # İkinci arama bittikten veya bir levha bulunduktan sonra
-        # PARK levhası seçime bir daha dahil edilmez.
         if self.park_sign_search_permanently_disabled:
             return
 
-        park_detection = None
-        for class_name, detection in detections.items():
-            if class_name.lower() == 'park':
-                park_detection = detection
+        try:
+            data = json.loads(msg.data)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+
+        for class_name in data.keys():
+            normalized = self.normalize_sign_class_name(class_name)
+            if 'park' in normalized and not self.is_no_parking_class(class_name):
+                now = time.monotonic()
+                if now - self.last_generic_park_log >= 1.0:
+                    self.last_generic_park_log = now
+                    self.get_logger().info(
+                        '[DIŞ LEVHA TOPIC] PARK görüldü; map koordinatlı detay bekleniyor.'
+                    )
                 break
 
-        if park_detection is None:
+    def detected_parking_sign_callback(self, msg):
+        if self.state != self.STATE_WAIT_PARK_SIGN:
+            return
+        if self.park_sign_search_permanently_disabled:
             return
 
-        x1, y1, x2, y2, confidence = park_detection
-        if confidence <= PARK_CONFIDENCE_THRESHOLD:
+        try:
+            data = json.loads(msg.data)
+        except Exception as error:
+            self.get_logger().warn(f'[PARK DETAIL JSON] Parse hatası: {error}')
             return
 
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-
-        camera_x, camera_y, camera_z = self.get_point_from_pointcloud(
-            center_x,
-            center_y,
-        )
-        if camera_x is None:
+        if not isinstance(data, dict):
             return
 
-        distance = math.sqrt(
-            camera_x ** 2 + camera_y ** 2 + camera_z ** 2
-        )
-        if distance < MIN_SIGN_DISTANCE or distance > MAX_SIGN_DISTANCE:
+        class_name = data.get('class_name', data.get('class', ''))
+        normalized = self.normalize_sign_class_name(class_name)
+
+        try:
+            map_x = float(data['map_x'])
+            map_y = float(data['map_y'])
+        except (KeyError, TypeError, ValueError):
             return
 
-        map_x, map_y, _ = self.transform_camera_point_to_map(
-            camera_x,
-            camera_y,
-            camera_z,
-        )
-        if map_x is None:
+        distance = data.get('distance', None)
+        confidence = data.get('confidence', None)
+
+        # PARK YASAK detayları da dış detector'dan alınır.
+        if self.is_no_parking_class(class_name):
+            forbidden_index, slot_distance = self.find_nearest_park(map_x, map_y)
+            if forbidden_index is None:
+                return
+            self.no_parking_detection_points.append((map_x, map_y, forbidden_index))
+            if forbidden_index not in self.no_parking_slots:
+                self.no_parking_slots.add(forbidden_index)
+                self.get_logger().warn(
+                    '\n[DIŞ LEVHA -> PARK YASAK]\n'
+                    f'Levha map=({map_x:.2f}, {map_y:.2f})\n'
+                    f'Elenecek park: #{forbidden_index}\n'
+                    f'Levha -> slot: {slot_distance:.2f} m'
+                )
+            return
+
+        if 'park' not in normalized:
             return
 
         self.park_detection_count += 1
         self.park_detection_points.append((map_x, map_y))
 
+        extra = []
+        if confidence is not None:
+            extra.append(f'conf={confidence}')
+        if distance is not None:
+            extra.append(f'dist={distance}m')
+
         self.get_logger().warn(
-            f'[PARK LEVHASI] geçerli={self.park_detection_count} | '
-            f'conf={confidence:.2f} | dist={distance:.2f} m | '
+            f'[DIŞ PARK TESPİTİ] #{self.park_detection_count} | '
             f'map=({map_x:.2f}, {map_y:.2f})'
+            + ((' | ' + ' | '.join(extra)) if extra else '')
         )
 
-        # Gerekli tespit sayısına ulaşınca 10 sn timeout'u BEKLEME.
-        # En yakın parkı seç ve doğrudan Cüllop planner/controller aşamasına geç.
         if self.park_detection_count >= PARK_REQUIRED_DETECTIONS:
             self.finish_park_sign_scan_and_select()
 
-    def find_nearest_park(self, sign_x, sign_y):
+    def find_nearest_park(self, sign_x, sign_y, excluded=None):
+        excluded = set() if excluded is None else set(excluded)
         best_index = None
         best_distance = float('inf')
 
         for park_index, park in PARK_NOKTALARI.items():
-            distance = math.hypot(
-                float(park['x']) - sign_x,
-                float(park['y']) - sign_y,
-            )
+            if park_index in excluded:
+                continue
+            distance = math.hypot(float(park['x']) - sign_x, float(park['y']) - sign_y)
             if distance < best_distance:
                 best_distance = distance
                 best_index = park_index
 
         return best_index, best_distance
-
-    def select_nearest_safe_fallback_park(self):
-        # SAFE_FALLBACK_PARKS bir whitelist'tir:
-        # yalnız park etmenin serbest / güvenli olduğu bilinen slotlar
-        # burada tutulmalıdır.
-        candidates = [
-            park_index
-            for park_index in sorted(SAFE_FALLBACK_PARKS)
-            if park_index in PARK_NOKTALARI
-        ]
-
-        if not candidates:
-            return None, float('inf')
-
-        robot_pose = self.get_robot_pose_map()
-        if robot_pose is None:
-            robot_pose = self.last_robot_map_pose
-
-        # Lokalizasyon o anda alınamazsa ikinci tarama pozunu referans al.
-        if robot_pose is None:
-            robot_x = SECOND_SEARCH_X
-            robot_y = SECOND_SEARCH_Y
-        else:
-            robot_x = float(robot_pose[0])
-            robot_y = float(robot_pose[1])
-
-        best_index = None
-        best_distance = float('inf')
-
-        for park_index in candidates:
-            park = PARK_NOKTALARI[park_index]
-            distance = math.hypot(
-                float(park['x']) - robot_x,
-                float(park['y']) - robot_y,
-            )
-
-            if distance < best_distance:
-                best_distance = distance
-                best_index = park_index
-
-        return best_index, best_distance
-
-    def color_image_callback(self, msg):
-        try:
-            cv_image = self.bridge.imgmsg_to_cv2(
-                msg,
-                desired_encoding='rgb8',
-            )
-            cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
-
-            now = time.monotonic()
-            if now - self.last_detection_time >= DETECTION_INTERVAL:
-                self.last_detection_time = now
-                self.last_detections = self.run_yolo(cv_image)
-
-                # Aktif 10 sn park taraması varsa park tespitlerini topla.
-                self.process_park_detection(self.last_detections)
-
-                # Eski birleşik levha node davranışı: diğer algıları publish et.
-                sign_data = {}
-                for class_name, detection in self.last_detections.items():
-                    x1, y1, x2, y2, _confidence = detection
-                    center_x = (x1 + x2) // 2
-                    center_y = (y1 + y2) // 2
-
-                    camera_x, camera_y, camera_z = self.get_point_from_pointcloud(
-                        center_x,
-                        center_y,
-                    )
-
-                    if camera_x is not None:
-                        distance = math.sqrt(
-                            camera_x ** 2 + camera_y ** 2 + camera_z ** 2
-                        )
-                    else:
-                        distance = self.calculate_distance(x1, y1, x2, y2)
-
-                    if MIN_SIGN_DISTANCE <= distance <= MAX_SIGN_DISTANCE:
-                        sign_data[class_name] = round(distance, 2)
-
-                if sign_data:
-                    publish_msg = String()
-                    publish_msg.data = json.dumps(sign_data)
-                    self.sign_publisher.publish(publish_msg)
-
-            # Park taraması sırasında kullanıcıya kamera penceresi göster.
-            if (
-                SHOW_CAMERA_DURING_PARK_SCAN
-                and self.state == self.STATE_WAIT_PARK_SIGN
-                and not self.camera_window_failed
-            ):
-                self.annotated_image = cv_image.copy()
-
-                for class_name, detection in self.last_detections.items():
-                    x1, y1, x2, y2, confidence = detection
-                    center_x = (x1 + x2) // 2
-                    center_y = (y1 + y2) // 2
-
-                    camera_x, camera_y, camera_z = self.get_point_from_pointcloud(
-                        center_x,
-                        center_y,
-                    )
-                    if camera_x is not None:
-                        distance = math.sqrt(
-                            camera_x ** 2 + camera_y ** 2 + camera_z ** 2
-                        )
-                    else:
-                        distance = self.calculate_distance(x1, y1, x2, y2)
-
-                    self._draw_box(
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        class_name,
-                        distance,
-                        confidence,
-                    )
-
-                try:
-                    if self.annotated_image.shape[0] > 0:
-                        small_image = cv2.resize(
-                            self.annotated_image,
-                            (
-                                max(1, self.annotated_image.shape[1] // 2),
-                                max(1, self.annotated_image.shape[0] // 2),
-                            ),
-                        )
-                        cv2.imshow(CAMERA_WINDOW_NAME, small_image)
-                        self.camera_window_opened = True
-                        cv2.waitKey(1)
-                except Exception as gui_error:
-                    self.camera_window_failed = True
-                    self.get_logger().warn(
-                        '[KAMERA GUI] Pencere açılamadı; '
-                        'Park taraması ve YOLO çalışmaya devam edecek. '
-                        f'Hata: {gui_error}'
-                    )
-
-        except Exception as error:
-            self.get_logger().error(f'[IMAGE] {error}')
-
-    def close_camera_window(self):
-        if not self.camera_window_opened:
-            return
-        try:
-            cv2.destroyWindow(CAMERA_WINDOW_NAME)
-            cv2.waitKey(1)
-        except Exception:
-            pass
-        self.camera_window_opened = False
-
-    def calculate_distance(self, x1, y1, x2, y2):
-        real_width = 0.5
-        bbox_width = max(x2 - x1, 1)
-        return (real_width * self.fx) / bbox_width * 1.7
-
-    def _draw_box(
-        self,
-        x1,
-        y1,
-        x2,
-        y2,
-        class_name,
-        distance,
-        confidence,
-    ):
-        if class_name.lower() == 'park' or 'durak' in class_name.lower():
-            color = (0, 0, 255)
-        else:
-            color = (0, 255, 0)
-
-        cv2.rectangle(
-            self.annotated_image,
-            (x1, y1),
-            (x2, y2),
-            color,
-            2,
-        )
-
-        label = f'{class_name}: {distance:.2f}m ({confidence:.2f})'
-        cv2.putText(
-            self.annotated_image,
-            label,
-            (x1, max(15, y1 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            2,
-        )
 
     # ========================================================
+    # TRIGGER ALANI HIZ YÖNETİMİ
+    # ========================================================
+
+    def make_followpath_speed_request(self, desired_speed):
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(
+                'FollowPath.desired_linear_vel',
+                Parameter.Type.DOUBLE,
+                float(desired_speed),
+            ).to_parameter_msg(),
+        ]
+        return request
+
+    def request_park_area_speed(self):
+        if self.park_area_speed_active or self.park_area_speed_request_pending:
+            return
+        if not self.set_params_client.service_is_ready():
+            return
+
+        self.park_area_speed_request_pending = True
+        request = self.make_followpath_speed_request(PARK_AREA_FOLLOWPATH_DESIRED_LINEAR_VEL)
+        future = self.set_params_client.call_async(request)
+        future.add_done_callback(self.park_area_speed_result_callback)
+
+    def park_area_speed_result_callback(self, future):
+        self.park_area_speed_request_pending = False
+        try:
+            response = future.result()
+        except Exception as error:
+            self.finish_with_error(f'Park alanı hız parametresi gönderilemedi: {error}')
+            return
+
+        successful, reason = self.parameter_response_successful(response, expected_count=1)
+        if not successful:
+            self.finish_with_error(f'Park alanı hızı ayarlanamadı: {reason}')
+            return
+
+        self.park_area_speed_active = True
+        self.get_logger().warn(
+            f'[PARK ALANI HIZI AKTİF] FollowPath.desired_linear_vel = '
+            f'{PARK_AREA_FOLLOWPATH_DESIRED_LINEAR_VEL:.2f} m/s'
+        )
+
+    def restore_normal_followpath_speed(self):
+        if not self.park_area_speed_active:
+            return self.restore_speed_future
+        if self.restore_speed_request_pending:
+            return self.restore_speed_future
+        if not self.set_params_client.service_is_ready():
+            return None
+
+        self.restore_speed_request_pending = True
+        request = self.make_followpath_speed_request(NORMAL_FOLLOWPATH_DESIRED_LINEAR_VEL)
+        self.restore_speed_future = self.set_params_client.call_async(request)
+        self.restore_speed_future.add_done_callback(self.restore_normal_speed_result_callback)
+        return self.restore_speed_future
+
+    def restore_normal_speed_result_callback(self, future):
+        self.restore_speed_request_pending = False
+        try:
+            response = future.result()
+        except Exception as error:
+            self.get_logger().error(f'Normal FollowPath hızı geri yüklenemedi: {error}')
+            return
+
+        successful, reason = self.parameter_response_successful(response, expected_count=1)
+        if not successful:
+            self.get_logger().error(f'Normal FollowPath hızı geri yüklenemedi: {reason}')
+            return
+
+        self.park_area_speed_active = False
+        self.get_logger().info(
+            f'Normal FollowPath hızı geri yüklendi: {NORMAL_FOLLOWPATH_DESIRED_LINEAR_VEL:.2f} m/s'
+        )
+
     # CÜLLOP PARK: SERVER HAZIRLIK + TOLERANCE
     # ========================================================
 
@@ -1553,14 +1149,14 @@ class SignDetectorParkingManager(Node):
         return request
 
     @staticmethod
-    def parameter_response_successful(response):
+    def parameter_response_successful(response, expected_count=None):
         if response is None:
             return False, 'SetParameters cevabı boş.'
 
-        if len(response.results) != 2:
+        if expected_count is not None and len(response.results) != expected_count:
             return (
                 False,
-                f'2 parametre sonucu bekleniyordu, {len(response.results)} geldi.',
+                f'{expected_count} parametre sonucu bekleniyordu, {len(response.results)} geldi.',
             )
 
         for result in response.results:
@@ -1599,7 +1195,7 @@ class SignDetectorParkingManager(Node):
             )
             return
 
-        successful, reason = self.parameter_response_successful(response)
+        successful, reason = self.parameter_response_successful(response, expected_count=2)
         if not successful:
             self.finish_with_error(
                 f'Park goal tolerance ayarlanamadı: {reason}'
@@ -1929,6 +1525,7 @@ class SignDetectorParkingManager(Node):
                 '==========================================='
             )
             self.restore_normal_goal_tolerance()
+            self.restore_normal_followpath_speed()
             return
 
         if status == GoalStatus.STATUS_CANCELED:
@@ -1936,6 +1533,7 @@ class SignDetectorParkingManager(Node):
             self.state = self.STATE_ERROR
             self.get_logger().warn('Park FollowPath iptal edildi.')
             self.restore_normal_goal_tolerance()
+            self.restore_normal_followpath_speed()
             return
 
         result = wrapped_result.result
@@ -1949,6 +1547,7 @@ class SignDetectorParkingManager(Node):
             f'status={status}, error_code={error_code}, error={error_msg}'
         )
         self.restore_normal_goal_tolerance()
+        self.restore_normal_followpath_speed()
 
     # ========================================================
     # NORMAL GOAL TOLERANCE GERİ YÜKLE
@@ -1992,7 +1591,7 @@ class SignDetectorParkingManager(Node):
             )
             return
 
-        successful, reason = self.parameter_response_successful(response)
+        successful, reason = self.parameter_response_successful(response, expected_count=2)
         if not successful:
             self.get_logger().error(
                 f'Normal goal tolerance geri yüklenemedi: {reason}'
@@ -2015,21 +1614,19 @@ class SignDetectorParkingManager(Node):
         self.parking_finished = True
         self.park_sign_search_permanently_disabled = True
         self.state = self.STATE_ERROR
-        self.close_camera_window()
         self.restore_normal_goal_tolerance()
+        self.restore_normal_followpath_speed()
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SignDetectorParkingManager()
+    node = ExternalSignParkingManager()
 
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Otomatik park + cüllop park node kapatılıyor.')
+        node.get_logger().info('External levha + cüllop park node kapatılıyor.')
     finally:
-        node.close_camera_window()
-        cv2.destroyAllWindows()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
